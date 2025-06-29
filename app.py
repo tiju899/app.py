@@ -21,8 +21,7 @@ if not st.session_state.logged_in:
         if login_btn:
             if username == VALID_USERNAME and password == VALID_PASSWORD:
                 st.session_state.logged_in = True
-                st.success("✅ Login successful! Please click below to continue.")
-                st.button("Continue")
+                st.success("✅ Login successful!")
             else:
                 st.error("❌ Invalid username or password")
     st.stop()
