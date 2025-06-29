@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import pdfplumber
+import fitz  # PyMuPDF
 import io
 import re
 
@@ -26,25 +27,20 @@ if not st.session_state.logged_in:
                 st.error("❌ Invalid username or password")
     st.stop()
 
-# --- FUNCTION TO EXTRACT PARTS ---
+# --- ADVANCED FUNCTION TO EXTRACT PARTS ---
 def extract_parts_from_pdf(uploaded_file):
     parts = []
     if uploaded_file is None:
         return parts
 
-    with pdfplumber.open(uploaded_file) as pdf:
-        for page in pdf.pages:
-            words = page.extract_words(x_tolerance=3, y_tolerance=3)
-            lines = {}
-            for word in words:
-                y = round(word["top"], 1)
-                if y not in lines:
-                    lines[y] = []
-                lines[y].append(word["text"])
-
-            for y in sorted(lines.keys()):
-                line = " ".join(lines[y])
-                match = re.match(r"^(\d{5,}[A-Z0-9-]*)\s+(.+?)\s+(\d{1,3}(?:,\d{3})*\.\d{2})\s+(\d\.\d{3})", line)
+    try:
+        # Use PyMuPDF (fitz) for more robust text layout
+        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        for page in doc:
+            text = page.get_text("text")
+            lines = text.split("\n")
+            for line in lines:
+                match = re.match(r"^(\d{5,}[A-Z0-9-]*)\s+(.+?)\s+(\d{1,3}(?:,\d{3})*\.\d{2})\s+(\d+\.\d{3})", line)
                 if match:
                     part_no = match.group(1).strip()
                     desc = match.group(2).strip()
@@ -56,6 +52,8 @@ def extract_parts_from_pdf(uploaded_file):
                         "Description": desc,
                         "Amount": amt
                     })
+    except Exception as e:
+        st.error(f"Failed to parse PDF: {e}")
 
     return parts
 
@@ -84,7 +82,6 @@ def compare_parts(est_parts, bill_parts):
 
     df["Status"] = df.apply(determine_status, axis=1)
 
-    # Format Amount columns
     for col in ["Amount Estimate", "Amount Final"]:
         df[col] = df[col].apply(lambda x: f"₹{float(x):,.2f}" if pd.notna(x) and isinstance(x, (int, float)) else "")
 
@@ -114,7 +111,6 @@ if estimate_file and bill_file:
             st.subheader("📊 Comparison Result")
             st.dataframe(result_df, use_container_width=True)
 
-            # Download
             csv = result_df.to_csv(index=False).encode("utf-8")
             st.download_button("⬇️ Download Excel", data=csv, file_name="estimate_vs_bill_comparison.csv", mime="text/csv")
 
