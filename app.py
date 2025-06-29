@@ -4,14 +4,15 @@ import pdfplumber
 import io
 import re
 
-# ================= Streamlit Config ===================
-st.set_page_config(page_title="Estimate Comparison Tool", layout="centered")
+# ========== Streamlit Config ==========
+st.set_page_config(page_title="Sarathy Estimate Tool", layout="centered")
 
-# ================= Part Extractor =====================
+# ========== PDF Extractor: Auto Detect Format ==========
 def extract_parts_from_pdf(uploaded_file):
     parts = []
     with pdfplumber.open(uploaded_file) as pdf:
         for page in pdf.pages:
+            # 🧾 Try TABLE FORMAT (bill-style)
             tables = page.extract_tables()
             for table in tables:
                 for row in table:
@@ -22,10 +23,8 @@ def extract_parts_from_pdf(uploaded_file):
                     rate = str(row[3]).strip()
                     qty = str(row[4]).strip()
 
-                    # Skip headers or empty lines
                     if not re.match(r'^[A-Z0-9\-]{6,}$', part_number):
                         continue
-
                     try:
                         rate = float(rate)
                         qty = float(qty)
@@ -38,10 +37,31 @@ def extract_parts_from_pdf(uploaded_file):
                     except:
                         continue
 
+            # ✏️ If nothing found, try TEXT FORMAT (estimate-style)
+            if not parts:
+                text = page.extract_text()
+                if not text:
+                    continue
+                for line in text.split('\n'):
+                    tokens = line.strip().split()
+                    if len(tokens) >= 3:
+                        try:
+                            part_number = tokens[0]
+                            amount = float(tokens[-1].replace(',', '').replace('₹', ''))
+                            description = ' '.join(tokens[1:-1])
+                            if re.match(r'^[A-Z0-9\-]{6,}$', part_number):
+                                parts.append({
+                                    'Part Number': part_number,
+                                    'Description': description,
+                                    'Amount': amount
+                                })
+                        except:
+                            continue
+
     df = pd.DataFrame(parts)
     return df.drop_duplicates(subset="Part Number")
 
-# ================= Status Generator ====================
+# ========== Status Logic ==========
 def get_status(row):
     if pd.isna(row['Amount_Estimate']):
         return '🆕 New Part'
@@ -54,7 +74,7 @@ def get_status(row):
     else:
         return '✅ Same'
 
-# ================= Login Setup =========================
+# ========== Stylish Login ==========
 VALID_USERNAME = "Tj.cgnr"
 VALID_PASSWORD = "Sarathy123"
 
@@ -63,10 +83,21 @@ if "logged_in" not in st.session_state:
 
 if not st.session_state.logged_in:
     st.markdown("""
-        <div style="text-align: center;">
-            <h2>🔐 Sarathy Estimate Comparison Tool</h2>
-            <p style="font-size:16px;">Login to continue</p>
-        </div>
+        <style>
+        .login-box {
+            background-color: #f9f9f9;
+            padding: 30px 40px;
+            border-radius: 15px;
+            box-shadow: 0px 0px 15px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 400px;
+            margin: auto;
+            margin-top: 60px;
+        }
+        </style>
+        <div class="login-box">
+            <h2 style='text-align: center;'>🔐 Sarathy Estimate Login</h2>
+            <p style='text-align: center;'>Please enter your credentials to continue</p>
         """, unsafe_allow_html=True)
 
     with st.form("login_form"):
@@ -81,11 +112,12 @@ if not st.session_state.logged_in:
                 st.experimental_rerun()
             else:
                 st.error("❌ Invalid username or password")
+    st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
-# ================= Main App ============================
-st.title("📄 Estimate vs Bill Comparison")
-st.markdown("Upload both PDFs to compare the estimated and final billed parts.")
+# ========== Main App UI ==========
+st.title("📄 Estimate vs Bill Comparison Tool")
+st.markdown("Upload your **Initial Estimate** and **Final Bill** PDFs to compare part-wise differences.")
 
 uploaded_est = st.file_uploader("📤 Upload Initial Estimate PDF", type="pdf")
 uploaded_bill = st.file_uploader("📤 Upload Final Bill PDF", type="pdf")
@@ -97,16 +129,18 @@ if uploaded_est and uploaded_bill:
     if est_df.empty or bill_df.empty:
         st.warning("⚠️ One of the PDFs didn't contain usable part data.")
     else:
+        # Merge by part number
         merged = pd.merge(est_df, bill_df, on="Part Number", how="outer", suffixes=('_Estimate', '_Bill'))
 
-        # Use Bill description if available
+        # Use available description
         merged['Description'] = merged.apply(
-            lambda row: row['Description_Bill'] if pd.notna(row['Description_Bill']) else row['Description_Estimate'],
+            lambda row: row.get('Description_Bill') if pd.notna(row.get('Description_Bill')) else row.get('Description_Estimate'),
             axis=1
         )
 
         merged['Status'] = merged.apply(get_status, axis=1)
 
+        # Format ₹ values
         merged['Amount_Estimate'] = merged['Amount_Estimate'].apply(
             lambda x: f"₹{x:,.2f}" if pd.notna(x) else ""
         )
@@ -120,6 +154,7 @@ if uploaded_est and uploaded_bill:
         st.subheader("📊 Comparison Result")
         st.dataframe(final_df, use_container_width=True)
 
+        # Excel download
         output = io.BytesIO()
         final_df.to_excel(output, index=False)
         st.download_button("⬇️ Download Excel", data=output.getvalue(), file_name="comparison_result.xlsx")
