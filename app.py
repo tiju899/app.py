@@ -34,26 +34,49 @@ def extract_parts_from_pdf(uploaded_file):
         return parts
 
     try:
-        # Use PyMuPDF (fitz) for more robust text layout
+        # Use PyMuPDF for more reliable text extraction
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         for page in doc:
             text = page.get_text("text")
             lines = text.split("\n")
             for line in lines:
-                match = re.match(r"^(\d{5,}[A-Z0-9-]*)\s+(.+?)\s+(\d{1,3}(?:,\d{3})*\.\d{2})\s+(\d+\.\d{3})", line)
+                # Flexible regex for Part No, Description, Rate, Quantity
+                match = re.match(
+                    r"^([A-Z0-9\-]{5,})\s+(.+?)\s+(\d{1,3}(?:,\d{3})*\.\d{2})\s+(\d+\.\d{3})", line
+                )
                 if match:
                     part_no = match.group(1).strip()
                     desc = match.group(2).strip()
-                    rate = float(match.group(3).replace(",", ""))
-                    qty = float(match.group(4))
-                    amt = round(rate * qty, 2)
-                    parts.append({
-                        "Part Number": part_no,
-                        "Description": desc,
-                        "Amount": amt
-                    })
+                    try:
+                        rate = float(match.group(3).replace(",", ""))
+                        qty = float(match.group(4))
+                        amt = round(rate * qty, 2)
+                        parts.append({
+                            "Part Number": part_no,
+                            "Description": desc,
+                            "Amount": amt
+                        })
+                    except:
+                        continue
+
+            # Fallback: scan lines for any tabular part-like entries
+            if not parts:
+                for line in lines:
+                    fallback_matches = re.findall(
+                        r"([A-Z0-9\-]{5,})\s+(.+?)\s+(\d{1,3}(?:,\d{3})*\.\d{2})\s+(\d+\.\d{3})", line)
+                    for part_no, desc, rate, qty in fallback_matches:
+                        try:
+                            amt = round(float(rate.replace(",", "")) * float(qty), 2)
+                            parts.append({
+                                "Part Number": part_no.strip(),
+                                "Description": desc.strip(),
+                                "Amount": amt
+                            })
+                        except:
+                            continue
+
     except Exception as e:
-        st.error(f"Failed to parse PDF: {e}")
+        st.error(f"❌ PDF parse failed: {e}")
 
     return parts
 
