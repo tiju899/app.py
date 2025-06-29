@@ -34,50 +34,28 @@ def extract_parts_from_pdf(uploaded_file):
 
     with pdfplumber.open(uploaded_file) as pdf:
         for page in pdf.pages:
-            table = page.extract_table()
-            if table:
-                for row in table:
-                    row = [cell.strip() if cell else "" for cell in row]
-                    if len(row) >= 5:
-                        part_no = row[0]
-                        desc = row[1]
-                        rate = row[2].replace(",", "")
-                        qty = row[3].replace(",", "")
-                        try:
-                            rate_val = float(rate)
-                            qty_val = float(qty)
-                            amt = round(rate_val * qty_val, 2)
-                        except:
-                            continue
+            words = page.extract_words(x_tolerance=3, y_tolerance=3)
+            lines = {}
+            for word in words:
+                y = round(word["top"], 1)
+                if y not in lines:
+                    lines[y] = []
+                lines[y].append(word["text"])
 
-                        if re.match(r"^[A-Z0-9]{5,}$", part_no):
-                            parts.append({
-                                "Part Number": part_no,
-                                "Description": desc,
-                                "Amount": amt
-                            })
-            else:
-                # Fallback to line-based matching
-                words = page.extract_words(x_tolerance=1, y_tolerance=1)
-                line_texts = {}
-                for word in words:
-                    y0 = round(word["top"], 1)
-                    if y0 not in line_texts:
-                        line_texts[y0] = []
-                    line_texts[y0].append(word["text"])
-
-                for y0 in sorted(line_texts):
-                    line = " ".join(line_texts[y0])
-                    match = re.match(r"^([A-Z]{3,5}[0-9]{5,}|[0-9]{5,}[A-Z]{2,})\s+(.*?)(?:\s+\u20b9|\s+Rs|\s+INR)?\s*([0-9,]+\.\d{2})?", line)
-                    if match:
-                        number = match.group(1).strip()
-                        desc = match.group(2).strip()
-                        amt = match.group(3)
-                        try:
-                            amt = float(amt.replace(",", "")) if amt else 0.0
-                        except:
-                            amt = 0.0
-                        parts.append({"Part Number": number, "Description": desc, "Amount": amt})
+            for y in sorted(lines.keys()):
+                line = " ".join(lines[y])
+                match = re.match(r"^(\d{5,}[A-Z0-9-]*)\s+(.+?)\s+(\d{1,3}(?:,\d{3})*\.\d{2})\s+(\d\.\d{3})", line)
+                if match:
+                    part_no = match.group(1).strip()
+                    desc = match.group(2).strip()
+                    rate = float(match.group(3).replace(",", ""))
+                    qty = float(match.group(4))
+                    amt = round(rate * qty, 2)
+                    parts.append({
+                        "Part Number": part_no,
+                        "Description": desc,
+                        "Amount": amt
+                    })
 
     return parts
 
@@ -126,8 +104,10 @@ if estimate_file and bill_file:
         est_parts = extract_parts_from_pdf(estimate_file)
         bill_parts = extract_parts_from_pdf(bill_file)
 
-        if not est_parts and not bill_parts:
-            st.warning("⚠️ One of the PDFs didn't contain usable part data.")
+        if not est_parts:
+            st.error("❌ Estimate PDF didn't contain usable part data.")
+        elif not bill_parts:
+            st.error("❌ Bill PDF didn't contain usable part data.")
         else:
             result_df = compare_parts(est_parts, bill_parts)
 
