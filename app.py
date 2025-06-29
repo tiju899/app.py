@@ -74,8 +74,7 @@ def get_status(row):
     else:
         return '✅ Same'
 
-# ========== Custom Login UI ==========
-
+# ========== Stylish Login ==========
 VALID_USERNAME = "Tj.cgnr"
 VALID_PASSWORD = "Sarathy123"
 
@@ -84,91 +83,37 @@ if "logged_in" not in st.session_state:
 
 if not st.session_state.logged_in:
     st.markdown("""
-    <style>
-    html, body {
-        background: linear-gradient(to bottom right, #d0ebff, #e0caff);
-    }
-    .blur-bg {
-        position: fixed;
-        width: 100%;
-        height: 100%;
-        z-index: -1;
-    }
-    .bubble {
-        position: absolute;
-        border-radius: 50%;
-        filter: blur(90px);
-        opacity: 0.2;
-        animation: pulse 6s infinite alternate;
-    }
-    .bubble1 {
-        top: -100px;
-        left: -100px;
-        width: 300px;
-        height: 300px;
-        background: #74c0fc;
-    }
-    .bubble2 {
-        bottom: -100px;
-        right: -100px;
-        width: 300px;
-        height: 300px;
-        background: #d0bfff;
-        animation-delay: 2s;
-    }
-    @keyframes pulse {
-        0% { transform: scale(1); }
-        100% { transform: scale(1.2); }
-    }
-    .login-box {
-        max-width: 400px;
-        margin: 5% auto;
-        background: rgba(255,255,255,0.75);
-        border-radius: 20px;
-        padding: 40px;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.1);
-        backdrop-filter: blur(10px);
-        border: 1px solid rgba(255,255,255,0.3);
-    }
-    .login-box h2 {
-        text-align: center;
-        margin-bottom: 20px;
-        font-size: 28px;
-        font-weight: bold;
-    }
-    .login-box p {
-        text-align: center;
-        color: #555;
-        font-size: 14px;
-        margin-bottom: 30px;
-    }
-    </style>
-    <div class="blur-bg">
-        <div class="bubble bubble1"></div>
-        <div class="bubble bubble2"></div>
-    </div>
-    <div class="login-box">
-        <h2>🔐 Welcome Back</h2>
-        <p>Sign in to access Sarathy Estimate Tool</p>
-    """, unsafe_allow_html=True)
+        <style>
+        .login-box {
+            background-color: #f9f9f9;
+            padding: 30px 40px;
+            border-radius: 15px;
+            box-shadow: 0px 0px 15px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 400px;
+            margin: auto;
+            margin-top: 60px;
+        }
+        </style>
+        <div class="login-box">
+            <h2 style='text-align: center;'>🔐 Sarathy Estimate Login</h2>
+            <p style='text-align: center;'>Please enter your credentials to continue</p>
+        """, unsafe_allow_html=True)
 
     with st.form("login_form"):
-        username = st.text_input("👤 Username", placeholder="Enter your username")
-        password = st.text_input("🔑 Password", type="password", placeholder="Enter your password")
-        keep_signed_in = st.checkbox("Keep me signed in")
-        submit = st.form_submit_button("🚀 Sign In")
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        login_btn = st.form_submit_button("Login")
 
-    if submit:
-        if username == VALID_USERNAME and password == VALID_PASSWORD:
-            st.session_state.logged_in = True
-            st.success("✅ Login successful!")
-            st.experimental_rerun()
-        else:
-            st.error("❌ Invalid username or password")
-
+        if login_btn:
+            if username == VALID_USERNAME and password == VALID_PASSWORD:
+                st.session_state.logged_in = True
+                st.success("✅ Login successful!")
+                st.experimental_rerun()
+            else:
+                st.error("❌ Invalid username or password")
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
-
 
 # ========== Main App UI ==========
 st.title("📄 Estimate vs Bill Comparison Tool")
