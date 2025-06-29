@@ -62,7 +62,3 @@ if uploaded_est and uploaded_bill:
     output = io.BytesIO()
     merged.to_excel(output, index=False)
     st.download_button("⬇️ Download Excel", data=output.getvalue(), file_name="comparison_result.xlsx")
-streamlit
-pandas
-pdfplumber
-openpyxl
