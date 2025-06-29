@@ -74,7 +74,8 @@ def get_status(row):
     else:
         return '✅ Same'
 
-# ========== Stylish Login ==========
+# ========== Custom Login UI ==========
+
 VALID_USERNAME = "Tj.cgnr"
 VALID_PASSWORD = "Sarathy123"
 
@@ -84,26 +85,61 @@ if "logged_in" not in st.session_state:
 if not st.session_state.logged_in:
     st.markdown("""
         <style>
+        .login-container {
+            background: linear-gradient(to bottom, #d0ebff, #74c0fc);
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
         .login-box {
-            background-color: #f9f9f9;
-            padding: 30px 40px;
+            background-color: white;
             border-radius: 15px;
-            box-shadow: 0px 0px 15px rgba(0,0,0,0.1);
+            padding: 40px 50px;
+            box-shadow: 0px 4px 12px rgba(0,0,0,0.1);
+            text-align: center;
             width: 100%;
             max-width: 400px;
-            margin: auto;
-            margin-top: 60px;
+        }
+        .login-box input {
+            width: 100%;
+            padding: 10px;
+            margin-top: 12px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+        }
+        .login-btn {
+            background-color: #00aaff;
+            color: white;
+            padding: 10px;
+            border: none;
+            width: 100%;
+            margin-top: 20px;
+            border-radius: 6px;
+            font-weight: bold;
+        }
+        .login-btn:hover {
+            background-color: #0077cc;
+        }
+        .form-footer {
+            font-size: 12px;
+            color: #888;
+            margin-top: 20px;
         }
         </style>
+
+        <div class="login-container">
         <div class="login-box">
-            <h2 style='text-align: center;'>🔐 Sarathy Estimate Login</h2>
-            <p style='text-align: center;'>Please enter your credentials to continue</p>
-        """, unsafe_allow_html=True)
+            <img src="https://cdn-icons-png.flaticon.com/512/2913/2913465.png" width="60" />
+            <h2 style='margin-top: 10px;'>Sign in</h2>
+            <form action="" method="post">
+    """, unsafe_allow_html=True)
 
     with st.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        login_btn = st.form_submit_button("Login")
+        username = st.text_input("Username", placeholder="Enter username")
+        password = st.text_input("Password", type="password", placeholder="Enter password")
+        keep_signed_in = st.checkbox("Keep me signed in")
+        login_btn = st.form_submit_button("Sign In")
 
         if login_btn:
             if username == VALID_USERNAME and password == VALID_PASSWORD:
@@ -112,7 +148,16 @@ if not st.session_state.logged_in:
                 st.experimental_rerun()
             else:
                 st.error("❌ Invalid username or password")
-    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("""
+            <div class="form-footer">
+                <p><a href="#">Forgot Password?</a></p>
+                <p>Not a member? <a href="#">Sign up</a></p>
+            </div>
+        </form>
+        </div>
+        </div>
+    """, unsafe_allow_html=True)
     st.stop()
 
 # ========== Main App UI ==========
