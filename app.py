@@ -21,8 +21,8 @@ if not st.session_state.logged_in:
         if login_btn:
             if username == VALID_USERNAME and password == VALID_PASSWORD:
                 st.session_state.logged_in = True
-                st.success("✅ Login successful!")
-                st.experimental_rerun()
+                st.success("✅ Login successful! Please click below to continue.")
+                st.button("Continue")
             else:
                 st.error("❌ Invalid username or password")
     st.stop()
@@ -37,12 +37,39 @@ def extract_parts_from_pdf(uploaded_file):
         for page in pdf.pages:
             table = page.extract_table()
             if table:
-                for row in table[1:]:
-                    cleaned = [cell.strip() if cell else "" for cell in row]
-                    joined = " ".join(cleaned)
+                for row in table:
+                    row = [cell.strip() if cell else "" for cell in row]
+                    if len(row) >= 5:
+                        part_no = row[0]
+                        desc = row[1]
+                        rate = row[2].replace(",", "")
+                        qty = row[3].replace(",", "")
+                        try:
+                            rate_val = float(rate)
+                            qty_val = float(qty)
+                            amt = round(rate_val * qty_val, 2)
+                        except:
+                            continue
 
-                    # Match part number and description
-                    match = re.match(r"^([A-Z]{3,5}[0-9]{5,}|[0-9]{5,}[A-Z]{2,})\s+(.*?)(?:\s+\u20b9|\s+Rs|\s+INR)?\s*([0-9,]+\.\d{2})?", joined)
+                        if re.match(r"^[A-Z0-9]{5,}$", part_no):
+                            parts.append({
+                                "Part Number": part_no,
+                                "Description": desc,
+                                "Amount": amt
+                            })
+            else:
+                # Fallback to line-based matching
+                words = page.extract_words(x_tolerance=1, y_tolerance=1)
+                line_texts = {}
+                for word in words:
+                    y0 = round(word["top"], 1)
+                    if y0 not in line_texts:
+                        line_texts[y0] = []
+                    line_texts[y0].append(word["text"])
+
+                for y0 in sorted(line_texts):
+                    line = " ".join(line_texts[y0])
+                    match = re.match(r"^([A-Z]{3,5}[0-9]{5,}|[0-9]{5,}[A-Z]{2,})\s+(.*?)(?:\s+\u20b9|\s+Rs|\s+INR)?\s*([0-9,]+\.\d{2})?", line)
                     if match:
                         number = match.group(1).strip()
                         desc = match.group(2).strip()
@@ -114,4 +141,3 @@ if estimate_file and bill_file:
 
 else:
     st.info("📎 Please upload both Estimate and Final Bill PDFs to proceed.")
-
