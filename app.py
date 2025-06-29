@@ -16,11 +16,12 @@ if not st.session_state.logged_in:
     st.title("🔐 Login to EstimateComparer")
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
-    if st.button("Login"):
+    login_btn = st.button("Login")
+
+    if login_btn:
         if username == VALID_USERNAME and password == VALID_PASSWORD:
             st.session_state.logged_in = True
             st.success("Login successful!")
-            st.experimental_rerun()
         else:
             st.error("Invalid username or password.")
     st.stop()
