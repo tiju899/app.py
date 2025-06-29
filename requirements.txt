@@ -1,4 +1,4 @@
 streamlit
 pandas
-fitz
+PyMuPDF
 openpyxl
