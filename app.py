@@ -28,79 +28,45 @@ if not st.session_state.logged_in:
 
 # --- FUNCTION TO EXTRACT PARTS ---
 def extract_parts_from_pdf(uploaded_file):
+    import fitz  # safe to import here if you're swapping from pdfplumber
     parts = []
+
     if uploaded_file is None:
         return parts
 
     try:
-        with pdfplumber.open(uploaded_file) as pdf:
-            for page in pdf.pages:
-                text = page.extract_text()
-                lines = text.split("\n")
-                for line in lines:
-                    # Match: optional part no, description, rate, qty
-                    match = re.search(
-                        r"(?P<part>[A-Z0-9\-]{5,})?\s+(?P<desc>.+?)\s+(?P<rate>[\d,]+\.\d{2})\s+(?P<qty>\d+\.\d{3})",
-                        line
-                    )
-                    if match:
-                        part_no = match.group("part").strip() if match.group("part") else f"NO-ID-{len(parts)+1}"
-                        desc = match.group("desc").strip()
-                        try:
-                            rate = float(match.group("rate").replace(",", ""))
-                            qty = float(match.group("qty"))
-                            amt = round(rate * qty, 2)
-                            parts.append({
-                                "Part Number": part_no,
-                                "Description": desc,
-                                "Amount": amt
-                            })
-                        except:
-                            continue
+        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        for page in doc:
+            text = page.get_text("text")
+            lines = text.split("\n")
+
+            for line in lines:
+                # Optional debug:
+                # st.write(line)
+
+                match = re.search(
+                    r"(?P<part>[A-Z0-9\-]{5,})?\s+(?P<desc>.+?)\s+(?P<rate>[\d,]+\.\d{2})\s+(?P<qty>\d+\.\d{3})",
+                    line
+                )
+                if match:
+                    part_no = match.group("part") or f"NO-ID-{len(parts)+1}"
+                    desc = match.group("desc").strip()
+                    try:
+                        rate = float(match.group("rate").replace(",", ""))
+                        qty = float(match.group("qty"))
+                        amt = round(rate * qty, 2)
+                        parts.append({
+                            "Part Number": part_no.strip(),
+                            "Description": desc,
+                            "Amount": amt
+                        })
+                    except:
+                        continue
     except Exception as e:
-        st.error(f"❌ PDF parse failed: {e}")
+        st.error(f"❌ PyMuPDF failed to parse: {e}")
 
     return parts
 
-# --- COMPARISON FUNCTION ---
-def compare_parts(est_parts, bill_parts):
-    df_est = pd.DataFrame(est_parts)
-    df_bill = pd.DataFrame(bill_parts)
-
-    df_est = df_est[df_est["Amount"] > 0]
-    df_bill = df_bill[df_bill["Amount"] > 0]
-
-    df = pd.merge(
-        df_est,
-        df_bill,
-        how="outer",
-        on="Part Number",
-        suffixes=(" Estimate", " Final")
-    )
-
-    df["Amount Estimate"] = df["Amount Estimate"].fillna(0)
-    df["Amount Final"] = df["Amount Final"].fillna(0)
-
-    def determine_status(row):
-        if row["Amount Estimate"] == 0 and row["Amount Final"] > 0:
-            return "🆕 New Part"
-        elif row["Amount Estimate"] > 0 and row["Amount Final"] == 0:
-            return "❌ Removed"
-        elif row["Amount Final"] > row["Amount Estimate"]:
-            return "🔺 Increased"
-        elif row["Amount Final"] < row["Amount Estimate"]:
-            return "🔻 Reduced"
-        elif row["Amount Final"] == row["Amount Estimate"] and row["Amount Final"] != 0:
-            return "✅ Same"
-        else:
-            return ""
-
-    df["Status"] = df.apply(determine_status, axis=1)
-
-    for col in ["Amount Estimate", "Amount Final"]:
-        df[col] = df[col].apply(lambda x: f"₹{float(x):,.2f}" if pd.notna(x) and isinstance(x, (int, float)) else "")
-
-    return df
 
 # --- STREAMLIT APP UI ---
 st.title("📄 Estimate vs Bill Comparison Tool")
