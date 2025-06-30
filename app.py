@@ -38,15 +38,17 @@ def extract_parts_from_pdf(uploaded_file):
                 text = page.extract_text()
                 lines = text.split("\n")
                 for line in lines:
-                    match = re.match(
-                        r"^([A-Z0-9\-]{5,})\s+(.+?)\s+(\d{1,3}(?:,\d{3})*\.\d{2})\s+(\d+\.\d{3})", line
+                    # Match: optional part no, description, rate, qty
+                    match = re.search(
+                        r"(?P<part>[A-Z0-9\-]{5,})?\s+(?P<desc>.+?)\s+(?P<rate>[\d,]+\.\d{2})\s+(?P<qty>\d+\.\d{3})",
+                        line
                     )
                     if match:
-                        part_no = match.group(1).strip()
-                        desc = match.group(2).strip()
+                        part_no = match.group("part").strip() if match.group("part") else f"NO-ID-{len(parts)+1}"
+                        desc = match.group("desc").strip()
                         try:
-                            rate = float(match.group(3).replace(",", ""))
-                            qty = float(match.group(4))
+                            rate = float(match.group("rate").replace(",", ""))
+                            qty = float(match.group("qty"))
                             amt = round(rate * qty, 2)
                             parts.append({
                                 "Part Number": part_no,
@@ -65,11 +67,9 @@ def compare_parts(est_parts, bill_parts):
     df_est = pd.DataFrame(est_parts)
     df_bill = pd.DataFrame(bill_parts)
 
-    # Drop empty descriptions or totals
     df_est = df_est[df_est["Amount"] > 0]
     df_bill = df_bill[df_bill["Amount"] > 0]
 
-    # Merge using both Part Number and Description
     df = pd.merge(
         df_est,
         df_bill,
