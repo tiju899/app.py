@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import pdfplumber
+import fitz  # PyMuPDF fallback for OCR
 import io
 import re
 import openpyxl
@@ -28,43 +29,60 @@ if not st.session_state.logged_in:
                 st.error("❌ Invalid username or password")
     st.stop()
 
-# --- DEBUGGING FUNCTION TO EXTRACT PARTS ---
+# --- OCR FALLBACK ---
+def ocr_text_from_pdf(uploaded_file):
+    text = ""
+    try:
+        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        for page in doc:
+            text += page.get_text()
+    except Exception as e:
+        st.error(f"OCR fallback failed: {e}")
+    return text
+
+# --- FUNCTION TO EXTRACT PARTS ---
 def extract_parts_from_pdf(uploaded_file, is_bill=False):
     parts = []
     if uploaded_file is None:
         return parts
 
+    raw_text = ""
     try:
         with pdfplumber.open(uploaded_file) as pdf:
-            for page_num, page in enumerate(pdf.pages):
-                text = page.extract_text()
-                if not text:
-                    st.warning(f"⚠️ Page {page_num+1}: No text extracted.")
-                    continue
-                lines = text.split("\n")
-                for line in lines:
-                    pattern = r"(?P<part>[A-Z0-9\-]{5,})?\s+(?P<desc>.+?)\s+(?P<rate>[\d,]+\.\d{2})\s+(?P<qty>\d+\.\d{3})(?:\s+(?P<tax>\d{1,2})%)?"
-                    match = re.search(pattern, line)
+            for page in pdf.pages:
+                if page.extract_text():
+                    raw_text += page.extract_text() + "\n"
+    except:
+        pass
 
-                    if match:
-                        part_no = match.group("part") or f"NO-ID-{len(parts)+1}"
-                        desc = match.group("desc").strip()
-                        try:
-                            rate = float(match.group("rate").replace(",", ""))
-                            qty = float(match.group("qty"))
-                            tax = float(match.group("tax")) / 100 if is_bill and match.group("tax") else 0
-                            amt = round(rate * qty * (1 + tax), 2) if is_bill else round(rate * qty, 2)
+    # If no usable text found, fallback to OCR
+    if not raw_text.strip():
+        uploaded_file.seek(0)
+        raw_text = ocr_text_from_pdf(uploaded_file)
 
-                            parts.append({
-                                "Part Number": part_no.strip(),
-                                "Description": desc,
-                                "Amount": amt,
-                                "Line Number": len(parts) + 1
-                            })
-                        except:
-                            continue
-    except Exception as e:
-        st.error(f"❌ PDF parse failed: {e}")
+    if not raw_text.strip():
+        return parts
+
+    lines = raw_text.split("\n")
+    for line in lines:
+        pattern = r"(?P<part>[A-Z0-9\-]{5,})?\s+(?P<desc>.+?)\s+(?P<rate>[\d,]+\.\d{2})\s+(?P<qty>\d+\.\d{3})(?:\s+(?P<tax>\d{1,2})%)?"
+        match = re.search(pattern, line)
+        if match:
+            part_no = match.group("part") or f"NO-ID-{len(parts)+1}"
+            desc = match.group("desc").strip()
+            try:
+                rate = float(match.group("rate").replace(",", ""))
+                qty = float(match.group("qty"))
+                tax = float(match.group("tax")) / 100 if is_bill and match.group("tax") else 0
+                amt = round(rate * qty * (1 + tax), 2) if is_bill else round(rate * qty, 2)
+                parts.append({
+                    "Part Number": part_no.strip(),
+                    "Description": desc,
+                    "Amount": amt,
+                    "Line Number": len(parts) + 1
+                })
+            except:
+                continue
 
     return parts
 
