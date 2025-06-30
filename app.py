@@ -27,7 +27,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # --- DEBUGGING FUNCTION TO EXTRACT PARTS ---
-def extract_parts_from_pdf(uploaded_file):
+def extract_parts_from_pdf(uploaded_file, is_bill=False):
     parts = []
     if uploaded_file is None:
         return parts
@@ -43,21 +43,23 @@ def extract_parts_from_pdf(uploaded_file):
                 for line in lines:
                     st.write(f"📄 Line: {line}")  # Debug each line
 
-                    match = re.search(
-                        r"(?P<part>[A-Z0-9\-]{5,})?\s+(?P<desc>.+?)\s+(?P<rate>[\d,]+\.\d{2})\s+(?P<qty>\d+\.\d{3})",
-                        line
-                    )
+                    pattern = r"(?P<part>[A-Z0-9\-]{5,})?\s+(?P<desc>.+?)\s+(?P<rate>[\d,]+\.\d{2})\s+(?P<qty>\d+\.\d{3})(?:\s+(?P<tax>\d{1,2})%)?"
+                    match = re.search(pattern, line)
+
                     if match:
                         part_no = match.group("part") or f"NO-ID-{len(parts)+1}"
                         desc = match.group("desc").strip()
                         try:
                             rate = float(match.group("rate").replace(",", ""))
                             qty = float(match.group("qty"))
-                            amt = round(rate * qty, 2)
+                            tax = float(match.group("tax")) / 100 if is_bill and match.group("tax") else 0
+                            amt = round(rate * qty * (1 + tax), 2) if is_bill else round(rate * qty, 2)
+
                             parts.append({
                                 "Part Number": part_no.strip(),
                                 "Description": desc,
-                                "Amount": amt
+                                "Amount": amt,
+                                "Line Number": len(parts) + 1
                             })
                         except:
                             continue
@@ -77,34 +79,58 @@ def compare_parts(est_parts, bill_parts):
     df = pd.merge(
         df_est,
         df_bill,
-        how="outer",
+        how="inner",
         on="Part Number",
-        suffixes=(" Estimate", " Final")
+        suffixes=(" Estimate", " Bill")
+    )
     )
 
     df["Amount Estimate"] = df["Amount Estimate"].fillna(0)
-    df["Amount Final"] = df["Amount Final"].fillna(0)
+    df["Amount Bill"] = df["Amount Bill"].fillna(0)
 
     def determine_status(row):
-        if row["Amount Estimate"] == 0 and row["Amount Final"] > 0:
+        if row["Amount Estimate"] == 0 and row["Amount Bill"] > 0:
             return "🆕 New Part"
-        elif row["Amount Estimate"] > 0 and row["Amount Final"] == 0:
+        elif row["Amount Estimate"] > 0 and row["Amount Bill"] == 0:
             return "❌ Removed"
-        elif row["Amount Final"] > row["Amount Estimate"]:
+        elif row["Amount Bill"] > row["Amount Estimate"]:
             return "🔺 Increased"
-        elif row["Amount Final"] < row["Amount Estimate"]:
+        elif row["Amount Bill"] < row["Amount Estimate"]:
             return "🔻 Reduced"
-        elif row["Amount Final"] == row["Amount Estimate"] and row["Amount Final"] != 0:
+        elif row["Amount Bill"] == row["Amount Estimate"] and row["Amount Bill"] != 0:
             return "✅ Same"
         else:
             return ""
 
     df["Status"] = df.apply(determine_status, axis=1)
 
-    for col in ["Amount Estimate", "Amount Final"]:
+    for col in ["Amount Estimate", "Amount Bill"]:
         df[col] = df[col].apply(lambda x: f"₹{float(x):,.2f}" if pd.notna(x) and isinstance(x, (int, float)) else "")
 
-    return df
+    df = df.rename(columns={
+        "Line Number Estimate": "Estimate No",
+        "Line Number Bill": "Bill No",
+        "Part Number": "Part Number",
+        "Description Estimate": "Part Description",
+        "Amount Estimate": "Amount in Estimate",
+        "Amount Bill": "Amount in Bill"
+    })
+
+    output_columns = [
+        "Estimate No",
+        "Bill No",
+        "Part Number",
+        "Part Description",
+        "Amount in Estimate",
+        "Amount in Bill",
+        "Status"
+    ]
+
+    for col in output_columns:
+        if col not in df.columns:
+            df[col] = ""
+
+    return df[output_columns]
 
 # --- STREAMLIT APP UI ---
 st.title("📄 Estimate vs Bill Comparison Tool")
@@ -117,8 +143,8 @@ with col2:
 
 if estimate_file and bill_file:
     with st.spinner("Extracting and comparing parts..."):
-        est_parts = extract_parts_from_pdf(estimate_file)
-        bill_parts = extract_parts_from_pdf(bill_file)
+        est_parts = extract_parts_from_pdf(estimate_file, is_bill=False)
+        bill_parts = extract_parts_from_pdf(bill_file, is_bill=True)
 
         if not est_parts:
             st.error("❌ Estimate PDF didn't contain usable part data.")
