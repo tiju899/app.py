@@ -3,6 +3,8 @@ import pandas as pd
 import pdfplumber
 import io
 import re
+import openpyxl
+from io import BytesIO
 
 # --- LOGIN SETTINGS ---
 VALID_USERNAME = "Tj.cgnr"
@@ -41,8 +43,6 @@ def extract_parts_from_pdf(uploaded_file, is_bill=False):
                     continue
                 lines = text.split("\n")
                 for line in lines:
-                    st.write(f"📄 Line: {line}")  # Debug each line
-
                     pattern = r"(?P<part>[A-Z0-9\-]{5,})?\s+(?P<desc>.+?)\s+(?P<rate>[\d,]+\.\d{2})\s+(?P<qty>\d+\.\d{3})(?:\s+(?P<tax>\d{1,2})%)?"
                     match = re.search(pattern, line)
 
@@ -76,38 +76,33 @@ def compare_parts(est_parts, bill_parts):
     df_est = df_est[df_est["Amount"] > 0]
     df_bill = df_bill[df_bill["Amount"] > 0]
 
-    df = pd.merge(
+    df_common = pd.merge(
         df_est,
         df_bill,
         how="inner",
         on="Part Number",
         suffixes=(" Estimate", " Bill")
     )
-    )
 
-    df["Amount Estimate"] = df["Amount Estimate"].fillna(0)
-    df["Amount Bill"] = df["Amount Bill"].fillna(0)
+    df_common["Amount Estimate"] = df_common["Amount Estimate"].fillna(0)
+    df_common["Amount Bill"] = df_common["Amount Bill"].fillna(0)
 
     def determine_status(row):
-        if row["Amount Estimate"] == 0 and row["Amount Bill"] > 0:
-            return "🆕 New Part"
-        elif row["Amount Estimate"] > 0 and row["Amount Bill"] == 0:
-            return "❌ Removed"
-        elif row["Amount Bill"] > row["Amount Estimate"]:
+        if row["Amount Bill"] > row["Amount Estimate"]:
             return "🔺 Increased"
         elif row["Amount Bill"] < row["Amount Estimate"]:
             return "🔻 Reduced"
-        elif row["Amount Bill"] == row["Amount Estimate"] and row["Amount Bill"] != 0:
+        elif row["Amount Bill"] == row["Amount Estimate"]:
             return "✅ Same"
         else:
             return ""
 
-    df["Status"] = df.apply(determine_status, axis=1)
+    df_common["Status"] = df_common.apply(determine_status, axis=1)
 
     for col in ["Amount Estimate", "Amount Bill"]:
-        df[col] = df[col].apply(lambda x: f"₹{float(x):,.2f}" if pd.notna(x) and isinstance(x, (int, float)) else "")
+        df_common[col] = df_common[col].apply(lambda x: f"₹{float(x):,.2f}" if pd.notna(x) and isinstance(x, (int, float)) else "")
 
-    df = df.rename(columns={
+    df_common = df_common.rename(columns={
         "Line Number Estimate": "Estimate No",
         "Line Number Bill": "Bill No",
         "Part Number": "Part Number",
@@ -127,10 +122,30 @@ def compare_parts(est_parts, bill_parts):
     ]
 
     for col in output_columns:
-        if col not in df.columns:
-            df[col] = ""
+        if col not in df_common.columns:
+            df_common[col] = ""
 
-    return df[output_columns]
+    # New Parts
+    df_new = df_bill[~df_bill["Part Number"].isin(df_est["Part Number"])]
+    df_new["Estimate No"] = ""
+    df_new["Bill No"] = df_new["Line Number"]
+    df_new["Part Description"] = df_new["Description"]
+    df_new["Amount in Estimate"] = ""
+    df_new["Amount in Bill"] = df_new["Amount"].apply(lambda x: f"₹{float(x):,.2f}")
+    df_new["Status"] = "🆕 New Part"
+    df_new = df_new[output_columns]
+
+    # Removed Parts
+    df_removed = df_est[~df_est["Part Number"].isin(df_bill["Part Number"])]
+    df_removed["Estimate No"] = df_removed["Line Number"]
+    df_removed["Bill No"] = ""
+    df_removed["Part Description"] = df_removed["Description"]
+    df_removed["Amount in Estimate"] = df_removed["Amount"].apply(lambda x: f"₹{float(x):,.2f}")
+    df_removed["Amount in Bill"] = ""
+    df_removed["Status"] = "❌ Removed"
+    df_removed = df_removed[output_columns]
+
+    return df_common[output_columns], df_new, df_removed
 
 # --- STREAMLIT APP UI ---
 st.title("📄 Estimate vs Bill Comparison Tool")
@@ -151,13 +166,32 @@ if estimate_file and bill_file:
         elif not bill_parts:
             st.error("❌ Bill PDF didn't contain usable part data.")
         else:
-            result_df = compare_parts(est_parts, bill_parts)
+            df_main, df_new, df_removed = compare_parts(est_parts, bill_parts)
 
-            st.subheader("📊 Comparison Result")
-            st.dataframe(result_df, use_container_width=True)
+            st.subheader("📊 Matched Parts Comparison")
+            st.dataframe(df_main, use_container_width=True)
 
-            csv = result_df.to_csv(index=False).encode("utf-8")
-            st.download_button("⬇️ Download Excel", data=csv, file_name="estimate_vs_bill_comparison.csv", mime="text/csv")
+            if not df_new.empty:
+                st.subheader("🆕 New Parts (only in Bill)")
+                st.dataframe(df_new, use_container_width=True)
 
+            if not df_removed.empty:
+                st.subheader("❌ Removed Parts (only in Estimate)")
+                st.dataframe(df_removed, use_container_width=True)
+
+            all_rows = pd.concat([df_main, df_new, df_removed])
+
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df_main.to_excel(writer, index=False, sheet_name="Matched")
+                df_new.to_excel(writer, index=False, sheet_name="New Parts")
+                df_removed.to_excel(writer, index=False, sheet_name="Removed Parts")
+
+            st.download_button(
+                "⬇️ Download Excel",
+                data=output.getvalue(),
+                file_name="estimate_vs_bill_comparison.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 else:
     st.info("📎 Please upload both Estimate and Final Bill PDFs to proceed.")
