@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import pdfplumber
 import fitz  # PyMuPDF
 import io
 import re
@@ -34,13 +33,11 @@ def extract_parts_from_pdf(uploaded_file):
         return parts
 
     try:
-        # Use PyMuPDF for more reliable text extraction
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         for page in doc:
             text = page.get_text("text")
             lines = text.split("\n")
             for line in lines:
-                # Flexible regex for Part No, Description, Rate, Quantity
                 match = re.match(
                     r"^([A-Z0-9\-]{5,})\s+(.+?)\s+(\d{1,3}(?:,\d{3})*\.\d{2})\s+(\d+\.\d{3})", line
                 )
@@ -59,7 +56,6 @@ def extract_parts_from_pdf(uploaded_file):
                     except:
                         continue
 
-            # Fallback: scan lines for any tabular part-like entries
             if not parts:
                 for line in lines:
                     fallback_matches = re.findall(
