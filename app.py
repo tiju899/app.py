@@ -1,7 +1,7 @@
+import streamlit as st
 import fitz  # PyMuPDF
 import re
 import pandas as pd
-from io import BytesIO
 
 def extract_parts_from_pdf(uploaded_file, source="bill"):
     parts = []
@@ -32,23 +32,20 @@ def extract_parts_from_pdf(uploaded_file, source="bill"):
                             "Part Description": desc,
                             f"Amount in {source.capitalize()}": amt
                         })
-                    except Exception:
+                    except:
                         continue
     except Exception as e:
-        print(f"❌ Failed to parse {source}: {e}")
+        st.error(f"❌ Failed to parse {source} PDF: {e}")
 
     return parts
-
 
 def compare_bill_vs_estimate(bill_file, estimate_file):
     bill_parts = extract_parts_from_pdf(bill_file, source="bill")
     estimate_parts = extract_parts_from_pdf(estimate_file, source="estimate")
 
-    # Convert to DataFrame
     df_bill = pd.DataFrame(bill_parts)
     df_estimate = pd.DataFrame(estimate_parts)
 
-    # Merge on Part Number
     df_merged = pd.merge(
         df_estimate,
         df_bill,
@@ -57,21 +54,17 @@ def compare_bill_vs_estimate(bill_file, estimate_file):
         suffixes=("_Estimate", "_Bill")
     )
 
-    # Fill missing descriptions
     df_merged["Part Description"] = df_merged["Part Description_Estimate"].combine_first(df_merged["Part Description_Bill"])
     df_merged.drop(columns=["Part Description_Estimate", "Part Description_Bill"], inplace=True)
 
-    # Add static info
     df_merged["Estimate No"] = "ES25000088"
     df_merged["Bill No"] = "4/BI/25000304"
 
-    # Reorder columns
     df_final = df_merged[[
         "Estimate No", "Bill No", "Part Number", "Part Description",
         "Amount in Estimate", "Amount in Bill"
     ]]
 
-    # Add Status
     df_final["Status"] = df_final.apply(lambda row: (
         "Only in Estimate" if pd.isna(row["Amount in Bill"]) else
         "Only in Bill" if pd.isna(row["Amount in Estimate"]) else
@@ -80,3 +73,18 @@ def compare_bill_vs_estimate(bill_file, estimate_file):
     ), axis=1)
 
     return df_final
+
+# --- STREAMLIT UI ---
+st.title("🔍 Bill vs Estimate PDF Comparator")
+
+bill_file = st.file_uploader("Upload BILL PDF", type=["pdf"])
+estimate_file = st.file_uploader("Upload ESTIMATE PDF", type=["pdf"])
+
+if bill_file and estimate_file:
+    df_result = compare_bill_vs_estimate(bill_file, estimate_file)
+    st.success("✅ Comparison Complete")
+    st.dataframe(df_result)
+
+    # Export option
+    excel = df_result.to_excel(index=False)
+    st.download_button("📥 Download Excel", data=excel, file_name="Estimate_vs_Bill_Comparison.xlsx")
