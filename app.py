@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import fitz  # PyMuPDF
+import pdfplumber
 import io
 import re
 
@@ -26,51 +26,35 @@ if not st.session_state.logged_in:
                 st.error("❌ Invalid username or password")
     st.stop()
 
-# --- ADVANCED FUNCTION TO EXTRACT PARTS ---
+# --- FUNCTION TO EXTRACT PARTS ---
 def extract_parts_from_pdf(uploaded_file):
     parts = []
     if uploaded_file is None:
         return parts
 
     try:
-        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-        for page in doc:
-            text = page.get_text("text")
-            lines = text.split("\n")
-            for line in lines:
-                match = re.match(
-                    r"^([A-Z0-9\-]{5,})\s+(.+?)\s+(\d{1,3}(?:,\d{3})*\.\d{2})\s+(\d+\.\d{3})", line
-                )
-                if match:
-                    part_no = match.group(1).strip()
-                    desc = match.group(2).strip()
-                    try:
-                        rate = float(match.group(3).replace(",", ""))
-                        qty = float(match.group(4))
-                        amt = round(rate * qty, 2)
-                        parts.append({
-                            "Part Number": part_no,
-                            "Description": desc,
-                            "Amount": amt
-                        })
-                    except:
-                        continue
-
-            if not parts:
+        with pdfplumber.open(uploaded_file) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                lines = text.split("\n")
                 for line in lines:
-                    fallback_matches = re.findall(
-                        r"([A-Z0-9\-]{5,})\s+(.+?)\s+(\d{1,3}(?:,\d{3})*\.\d{2})\s+(\d+\.\d{3})", line)
-                    for part_no, desc, rate, qty in fallback_matches:
+                    match = re.match(
+                        r"^([A-Z0-9\-]{5,})\s+(.+?)\s+(\d{1,3}(?:,\d{3})*\.\d{2})\s+(\d+\.\d{3})", line
+                    )
+                    if match:
+                        part_no = match.group(1).strip()
+                        desc = match.group(2).strip()
                         try:
-                            amt = round(float(rate.replace(",", "")) * float(qty), 2)
+                            rate = float(match.group(3).replace(",", ""))
+                            qty = float(match.group(4))
+                            amt = round(rate * qty, 2)
                             parts.append({
-                                "Part Number": part_no.strip(),
-                                "Description": desc.strip(),
+                                "Part Number": part_no,
+                                "Description": desc,
                                 "Amount": amt
                             })
                         except:
                             continue
-
     except Exception as e:
         st.error(f"❌ PDF parse failed: {e}")
 
@@ -81,7 +65,19 @@ def compare_parts(est_parts, bill_parts):
     df_est = pd.DataFrame(est_parts)
     df_bill = pd.DataFrame(bill_parts)
 
-    df = pd.merge(df_est, df_bill, on="Part Number", how="outer", suffixes=(" Estimate", " Final"))
+    # Drop empty descriptions or totals
+    df_est = df_est[df_est["Amount"] > 0]
+    df_bill = df_bill[df_bill["Amount"] > 0]
+
+    # Merge using both Part Number and Description
+    df = pd.merge(
+        df_est,
+        df_bill,
+        how="outer",
+        on="Part Number",
+        suffixes=(" Estimate", " Final")
+    )
+
     df["Amount Estimate"] = df["Amount Estimate"].fillna(0)
     df["Amount Final"] = df["Amount Final"].fillna(0)
 
