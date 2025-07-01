@@ -75,16 +75,17 @@ def extract_from_bill_pdf(doc):
     parts = []
     # Pattern to find lines that start with a serial number and a part number
     # and capture the rest of the line.
+    # Example line: 1 35321M74L01 UNIT, HEADLAMP LH 2347.45 1.000 0.00 1173.73 18%
     line_pattern = re.compile(r"^\s*\d+\s+(?P<part_number>[A-Z0-9\-]+)\s+(?P<rest_of_line>.*)")
 
     # Pattern to find the 'Taxable Amount' (the 4th float after the part number)
     # and the preceding numbers (Rate, Qty, Tax Paid Amount)
     # This pattern is applied to 'rest_of_line'
     amount_pattern = re.compile(
-        r"(?:[\d,]+\.\d{2,3})\s+" +       # Rate
-        r"(?:[\d,]+\.\d{2,3})\s+" +       # Qty
-        r"(?:[\d,]+\.\d{2,3})\s+" +       # Tax Paid Amount
-        r"(?P<amount>[\d,]+\.\d{2,3})"    # Taxable Amount (our target)
+        r"(?:[\d,]+\.\d{2,3})\s+" +       # Rate (e.g., 2347.45)
+        r"(?:[\d,]+\.\d{2,3})\s+" +       # Qty (e.g., 1.000)
+        r"(?:[\d,]+\.\d{2,3})\s+" +       # Tax Paid Amount (e.g., 0.00)
+        r"(?P<amount>[\d,]+\.\d{2,3})"    # Taxable Amount (e.g., 1173.73) - our target
     )
 
     for page in doc:
@@ -100,7 +101,8 @@ def extract_from_bill_pdf(doc):
                     amount = safe_float_convert(amount_match.group('amount'))
                     # The description is everything between the part number and the first matched number sequence
                     # Find the start of the first number sequence
-                    first_num_start = re.search(r"[\d,]+\.\d{2,3}", rest_of_line)
+                    # This regex looks for any sequence of digits, commas, and dots that could be a number
+                    first_num_start = re.search(r"[\d,]+\.?\d*", rest_of_line)
                     if first_num_start:
                         description = rest_of_line[:first_num_start.start()].strip()
                         parts.append({
@@ -118,17 +120,18 @@ def extract_from_estimate_pdf(doc):
     parts = []
     # Pattern to find lines that start with S.No., Part No.
     # and capture the rest of the line.
+    # Example line: 1 69100M74L30 PANEL ASSY,BACK DOOR 6055 0 1 6055 6055 Replace
     line_pattern = re.compile(r"^\s*\d+\s+(?P<part_number>[A-Z0-9\-]+)\s+(?P<rest_of_line>.*)")
 
     # Pattern to find the 'Approved Amount' (the last float before 'Replace'/'Repair Allow')
     # and the preceding numbers (MRP, Depreciation %, Quantity Total, Claimed Value)
     # This pattern is applied to 'rest_of_line'
     amount_pattern = re.compile(
-        r"(?:[\d,]+\.\d{2,3}|\d+)\s+" +   # MRP
-        r"(?:[\d,]+\.\d{2,3}|\d+)\s+" +   # *Depreciation %
-        r"(?:[\d,]+\.\d{2,3}|\d+)\s+" +   # Quantity Total
-        r"(?:[\d,]+\.\d{2,3}|\d+)\s+" +   # Claimed Value
-        r"(?P<amount>[\d,]+\.\d{2,3}|\d+)\s+" + # Approved Amount (our target)
+        r"(?:[\d,]+\.\d{2,3}|\d+)\s+" +   # MRP (e.g., 6055)
+        r"(?:[\d,]+\.\d{2,3}|\d+)\s+" +   # *Depreciation % (e.g., 0)
+        r"(?:[\d,]+\.\d{2,3}|\d+)\s+" +   # Quantity Total (e.g., 1)
+        r"(?:[\d,]+\.\d{2,3}|\d+)\s+" +   # Claimed Value (e.g., 6055)
+        r"(?P<amount>[\d,]+\.\d{2,3}|\d+)\s+" + # Approved Amount (e.g., 6055) - our target
         r"(?:Replace|Repair Allow)"       # Service Type
     )
 
@@ -145,7 +148,7 @@ def extract_from_estimate_pdf(doc):
                     amount = safe_float_convert(amount_match.group('amount'))
                     # The description is everything between the part number and the first matched number sequence
                     # Find the start of the first number sequence
-                    first_num_start = re.search(r"[\d,]+\.\d{2,3}|\d+", rest_of_line)
+                    first_num_start = re.search(r"[\d,]+\.?\d*", rest_of_line)
                     if first_num_start:
                         description = rest_of_line[:first_num_start.start()].strip()
                         parts.append({
@@ -159,8 +162,10 @@ def safe_extract_parts(pdf_file, doc_type):
     """
     Dispatches to the correct PDF extraction function based on document type.
     Handles temporary file creation and cleanup.
+    Also extracts raw text for debugging.
     """
     parts = []
+    raw_text = ""
     temp_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
@@ -169,27 +174,30 @@ def safe_extract_parts(pdf_file, doc_type):
         
         doc = fitz.open(temp_path)
         
+        # Extract raw text for debugging
+        for page in doc:
+            raw_text += page.get_text() + "\n"
+
         if doc_type == 'estimate':
             parts = extract_from_estimate_pdf(doc)
         elif doc_type == 'bill':
             parts = extract_from_bill_pdf(doc)
         else:
             st.error("Invalid document type specified for extraction.")
-            return pd.DataFrame()
+            return pd.DataFrame(), raw_text # Return empty DF and raw text
             
         doc.close()
-        return pd.DataFrame(parts)
+        return pd.DataFrame(parts), raw_text
         
     except Exception as e:
         st.error(f"PDF Processing Error for {doc_type.capitalize()}: {str(e)}")
-        return pd.DataFrame()
+        return pd.DataFrame(), raw_text # Return empty DF and raw text on error
     finally:
         if temp_path:
             try:
                 import os
                 os.unlink(temp_path)
             except OSError:
-                # Handle case where file might already be deleted or inaccessible
                 pass
 
 # =============================================================================
@@ -345,6 +353,12 @@ def main():
     st.markdown('<div class="header">Estimate vs Bill Comparison Tool</div>', unsafe_allow_html=True)
     st.markdown("Upload your Estimate and Bill PDFs to compare part numbers, descriptions, and amounts.")
     
+    # Initialize raw_text variables in session state to persist across reruns
+    if 'estimate_raw_text' not in st.session_state:
+        st.session_state.estimate_raw_text = ""
+    if 'bill_raw_text' not in st.session_state:
+        st.session_state.bill_raw_text = ""
+
     with st.expander("📁 Upload Documents", expanded=True):
         col1, col2 = st.columns(2)
         with col1:
@@ -359,16 +373,16 @@ def main():
             
         with st.spinner("Processing documents and performing comparison..."):
             # Extract data from Estimate PDF
-            estimate_df = safe_extract_parts(estimate_file, 'estimate')
+            estimate_df, st.session_state.estimate_raw_text = safe_extract_parts(estimate_file, 'estimate')
             if estimate_df.empty:
                 st.error("Failed to extract any valid part data from the Estimate PDF. Please ensure it matches the expected format.")
-                return
+                # Do not return here, allow raw text to be displayed for debugging
                 
             # Extract data from Bill PDF
-            bill_df = safe_extract_parts(bill_file, 'bill')
+            bill_df, st.session_state.bill_raw_text = safe_extract_parts(bill_file, 'bill')
             if bill_df.empty:
                 st.error("Failed to extract any valid part data from the Bill PDF. Please ensure it matches the expected format.")
-                return
+                # Do not return here, allow raw text to be displayed for debugging
                 
             # Debug: Show extracted raw dataframes
             with st.expander("⚙️ Debug: Raw Extracted Data (for troubleshooting)", expanded=False):
@@ -376,61 +390,74 @@ def main():
                 st.dataframe(estimate_df, use_container_width=True)
                 st.subheader("Extracted Bill Data:")
                 st.dataframe(bill_df, use_container_width=True)
+
+            # Only proceed with comparison if both DFs are not empty
+            if not estimate_df.empty and not bill_df.empty:
+                # Perform the comparison
+                comparison_result = safe_comparison(estimate_df, bill_df)
                 
-            # Perform the comparison
-            comparison_result = safe_comparison(estimate_df, bill_df)
-            
-            st.success("Comparison completed successfully!")
-            st.markdown("---")
-            
-            # Display summary metrics
-            metric_cols = st.columns(4)
-            metrics = [
-                ("🔺 Increased", len(comparison_result['increased']), "#e63946"),
-                ("🔻 Reduced", len(comparison_result['reduced']), "#2a9d8f"),
-                ("🆕 New", len(comparison_result['new']), "#1d3557"),
-                ("❌ Removed", len(comparison_result['removed']), "#6c757d")
-            ]
-            
-            for idx, (label, value, color) in enumerate(metrics):
-                with metric_cols[idx]:
-                    st.markdown(
-                        f"""
-                        <div class="metric-box">
-                            <div style="font-size:24px;color:{color};">{label}</div>
-                            <div style="font-size:28px;font-weight:bold;color:{color};">{value}</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-            
-            # Display detailed comparison results in tabs
-            st.markdown("---")
-            with st.expander("📊 Detailed Comparison Results", expanded=True):
-                tabs_labels = [tab[0] for tab in metrics]
-                tabs_keys = ['increased', 'reduced', 'new', 'removed']
+                st.success("Comparison completed successfully!")
+                st.markdown("---")
                 
-                tabs = st.tabs(tabs_labels)
+                # Display summary metrics
+                metric_cols = st.columns(4)
+                metrics = [
+                    ("🔺 Increased", len(comparison_result['increased']), "#e63946"),
+                    ("🔻 Reduced", len(comparison_result['reduced']), "#2a9d8f"),
+                    ("🆕 New", len(comparison_result['new']), "#1d3557"),
+                    ("❌ Removed", len(comparison_result['removed']), "#6c757d")
+                ]
                 
-                for i, tab in enumerate(tabs):
-                    with tab:
-                        df = comparison_result[tabs_keys[i]]
-                        if not df.empty:
-                            st.dataframe(
-                                format_dataframe(df),
-                                use_container_width=True,
-                                height=400
-                            )
-                        else:
-                            st.info(f"No {tabs_keys[i].replace('_', ' ')} parts found in this category.")
-            
-            # Excel download link
-            st.markdown("---")
-            download_link = create_excel_download(comparison_result)
-            if download_link:
-                st.markdown(download_link, unsafe_allow_html=True)
+                for idx, (label, value, color) in enumerate(metrics):
+                    with metric_cols[idx]:
+                        st.markdown(
+                            f"""
+                            <div class="metric-box">
+                                <div style="font-size:24px;color:{color};">{label}</div>
+                                <div style="font-size:28px;font-weight:bold;color:{color};">{value}</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+                
+                # Display detailed comparison results in tabs
+                st.markdown("---")
+                with st.expander("📊 Detailed Comparison Results", expanded=True):
+                    tabs_labels = [tab[0] for tab in metrics]
+                    tabs_keys = ['increased', 'reduced', 'new', 'removed']
+                    
+                    tabs = st.tabs(tabs_labels)
+                    
+                    for i, tab in enumerate(tabs):
+                        with tab:
+                            df = comparison_result[tabs_keys[i]]
+                            if not df.empty:
+                                st.dataframe(
+                                    format_dataframe(df),
+                                    use_container_width=True,
+                                    height=400
+                                )
+                            else:
+                                st.info(f"No {tabs_keys[i].replace('_', ' ')} parts found in this category.")
+                
+                # Excel download link
+                st.markdown("---")
+                download_link = create_excel_download(comparison_result)
+                if download_link:
+                    st.markdown(download_link, unsafe_allow_html=True)
+                else:
+                    st.info("No data available to generate an Excel report.")
             else:
-                st.info("No data available to generate an Excel report.")
+                st.warning("Comparison could not be performed due to extraction errors in one or both documents.")
+
+    # Always show raw text for debugging after processing attempt
+    with st.expander("⚙️ Debug: Raw PDF Text (for regex testing)", expanded=False):
+        st.subheader("Estimate PDF Raw Text:")
+        st.text_area("Estimate Raw Text", st.session_state.estimate_raw_text, height=300, key="estimate_raw_text_display")
+        st.subheader("Bill PDF Raw Text:")
+        st.text_area("Bill Raw Text", st.session_state.bill_raw_text, height=300, key="bill_raw_text_display")
+        st.info("Copy the raw text above and test your regex patterns on a site like regex101.com to refine them.")
+
 
 if __name__ == "__main__":
     main()
