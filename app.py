@@ -5,7 +5,6 @@ import re
 import base64
 from io import BytesIO
 import tempfile
-from typing import Tuple, Optional
 
 # ========================================================
 # 1. PDF PROCESSING ENGINE
@@ -31,9 +30,9 @@ class PDFProcessor:
             (?<![-/])$           # Cannot end with separator
         ''', re.VERBOSE)
         
-        # Robust amount detection (handles ₹,Rs,USD formats)
+        # Robust amount detection (handles ₹, Rs, USD formats)
         AMOUNT_PATTERN = re.compile(r'''
-            (?:₹|Rs?\.?|USD)\s*  # Currency symbols
+            (?:₹|Rs?\.?|USD)?\s*  # Currency symbols
             (\d{1,3}             # Main digits
             (?:,\d{3})*          # Thousands separators
             (?:\.\d{2})?)        # Decimal part
