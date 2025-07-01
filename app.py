@@ -6,14 +6,14 @@ import base64
 from io import BytesIO
 import tempfile
 
-# ===== App Config =====
+# App Configuration
 st.set_page_config(
-    page_title="Estimate vs Bill Comparison",
+    page_title="Estimate vs Bill Comparison Tool",
     page_icon="📊",
     layout="wide"
 )
 
-# ===== CSS Styling =====
+# ===== Custom Styling =====
 st.markdown("""
 <style>
     .header {
@@ -22,241 +22,265 @@ st.markdown("""
         font-weight: bold;
         margin-bottom: 20px;
     }
-    .upload-section {
-        background-color: #f8f9fa;
-        padding: 20px;
-        border-radius: 10px;
-        margin-bottom: 20px;
-        border: 1px solid #ddd;
-    }
-    .result-section {
-        background-color: #f0f2f6;
-        padding: 20px;
-        border-radius: 10px;
-        border: 1px solid #ddd;
-    }
-    .stButton>button {
-        background-color: #2e86ab;
-        color: white;
-        border: none;
-        padding: 10px 24px;
-        border-radius: 5px;
-        font-weight: bold;
-    }
-    .stDownloadButton>button {
-        background-color: #28a745 !important;
-        color: white !important;
-    }
-    .metric-card {
+    .metric-box {
         background-color: white;
-        padding: 15px;
-        border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        border-radius: 10px;
+        padding: 20px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         text-align: center;
+        margin-bottom: 15px;
     }
     .highlight-increase {
-        color: #dc3545;
+        color: #e63946;
         font-weight: bold;
     }
     .highlight-decrease {
-        color: #28a745;
+        color: #2a9d8f;
         font-weight: bold;
+    }
+    .tab-container {
+        background-color: white;
+        border-radius: 10px;
+        padding: 20px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        margin-top: 15px;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# ===== PDF Processing =====
-def extract_parts_from_pdf(pdf_file):
+# ===== PDF Processing Functions =====
+def safe_extract_parts(pdf_file):
+    """Safely extract parts from PDF with enhanced error handling"""
     parts = []
+    temp_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(pdf_file.read())
-            tmp_path = tmp.name
+            temp_path = tmp.name
         
-        doc = fitz.open(tmp_path)
+        doc = fitz.open(temp_path)
         
         for page in doc:
             text = page.get_text()
-            # Enhanced regex with better pattern matching
+            # Improved regex pattern for robustness
             matches = re.finditer(
                 r'(?P<part_number>[A-Z0-9\-]+)\s+(?P<description>.+?)\s+(?P<amount>[\d,]+\.\d{2})',
                 text,
                 re.DOTALL
             )
             for match in matches:
-                parts.append({
+                part = {
                     'Part Number': match.group('part_number').strip(),
                     'Description': match.group('description').strip(),
-                    'Amount': float(match.group('amount').replace(',', ''))
-                })
+                    'Amount': safe_float_convert(match.group('amount'))
+                }
+                if part['Amount'] is not None:
+                    parts.append(part)
         
         doc.close()
+        return pd.DataFrame(parts)
+        
     except Exception as e:
-        st.error(f"⚠️ PDF Processing Error: {str(e)}")
+        st.error(f"PDF Processing Error: {str(e)}")
+        return pd.DataFrame()
     finally:
-        try:
-            import os
-            os.unlink(tmp_path)
-        except:
-            pass
-    
-    return pd.DataFrame(parts)
+        if temp_path:
+            try:
+                import os
+                os.unlink(temp_path)
+            except:
+                pass
 
-# ===== Data Comparison =====
-def compare_dataframes(df_estimate, df_bill):
-    result = {
-        'increased': None,
-        'reduced': None,
-        'new': None,
-        'removed': None
+def safe_float_convert(value):
+    """Convert string to float with error handling"""
+    try:
+        return float(str(value).replace(',', ''))
+    except:
+        return None
+
+# ===== Comparison Functions =====
+def safe_comparison(estimate_df, bill_df):
+    """Perform comparison with comprehensive error checking"""
+    results = {
+        'increased': pd.DataFrame(),
+        'reduced': pd.DataFrame(),
+        'new': pd.DataFrame(),
+        'removed': pd.DataFrame()
     }
     
-    if df_estimate.empty or df_bill.empty:
-        return result
-    
-    df_estimate = df_estimate.set_index('Part Number')
-    df_bill = df_bill.set_index('Part Number')
-    
-    # Merged dataframe for comparison
-    merged = df_bill.merge(
-        df_estimate,
-        how='outer',
-        left_index=True,
-        right_index=True,
-        suffixes=('_bill', '_estimate')
-    )
-    
-    # Calculate differences
-    result['increased'] = merged[
-        (merged['Amount_bill'] > merged['Amount_estimate']) & 
-        (~merged['Amount_estimate'].isna())
-    ]
-    result['reduced'] = merged[
-        (merged['Amount_bill'] < merged['Amount_estimate']) & 
-        (~merged['Amount_estimate'].isna())
-    ]
-    result['new'] = merged[merged['Amount_estimate'].isna()]
-    result['removed'] = merged[merged['Amount_bill'].isna()]
-    
-    return result
+    try:
+        if estimate_df.empty or bill_df.empty:
+            return results
+            
+        # Standardize column names
+        estimate_df = estimate_df.rename(columns=str.strip)
+        bill_df = bill_df.rename(columns=str.strip)
+        
+        # Ensure required columns exist
+        required_cols = ['Part Number', 'Description', 'Amount']
+        for col in required_cols:
+            if col not in estimate_df.columns or col not in bill_df.columns:
+                st.error(f"Missing required column: {col}")
+                return results
+                
+        # Set index and prepare for comparison
+        estimate_df = estimate_df.set_index('Part Number')
+        bill_df = bill_df.set_index('Part Number')
+        
+        # Perform a safe merge
+        try:
+            merged_df = bill_df.merge(
+                estimate_df,
+                how='outer',
+                suffixes=('_bill', '_estimate'),
+                indicator=True
+            )
+        except Exception as e:
+            st.error(f"Merge Error: {str(e)}")
+            return results
+            
+        # Calculate comparisons more safely
+        increased_mask = (
+            (merged_df['Amount_bill'] > merged_df['Amount_estimate']) & 
+            (merged_df['_merge'] == 'both')
+        )
+        
+        reduced_mask = (
+            (merged_df['Amount_bill'] < merged_df['Amount_estimate']) & 
+            (merged_df['_merge'] == 'both')
+        )
+        
+        new_mask = (merged_df['_merge'] == 'left_only')
+        removed_mask = (merged_df['_merge'] == 'right_only')
+        
+        # Create comparison results with proper columns
+        for key, mask in [
+            ('increased', increased_mask),
+            ('reduced', reduced_mask),
+            ('new', new_mask),
+            ('removed', removed_mask)
+        ]:
+            if sum(mask) > 0:
+                results[key] = merged_df[mask].copy()
+                # Rename columns for display
+                results[key].columns = [c.replace('_bill', '').replace('_estimate', ' (Estimate)') 
+                                      for c in results[key].columns]
+                results[key] = results[key][[c for c in results[key].columns if c != '_merge']]
+                
+    except Exception as e:
+        st.error(f"Comparison Error: {str(e)}")
+        
+    return results
 
-# ===== Excel Export =====
-def generate_excel_report(comparison_result):
+# ===== Display Functions =====
+def format_dataframe(df):
+    """Apply consistent formatting to DataFrames"""
+    if df.empty:
+        return df
+        
+    # Format numeric columns
+    for col in df.columns:
+        if pd.api.types.is_numeric_dtype(df[col]):
+            df[col] = df[col].apply(lambda x: f"{x:,.2f}" if pd.notnull(x) else "")
+            
+    return df
+
+def create_excel_download(comparison_result):
+    """Generate Excel download with all comparison sheets"""
     output = BytesIO()
-    
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        for sheet_name in ['increased', 'reduced', 'new', 'removed']:
-            if comparison_result[sheet_name] is not None and not comparison_result[sheet_name].empty:
-                comparison_result[sheet_name].to_excel(writer, sheet_name=sheet_name.title())
-    
-    excel_data = output.getvalue()
-    b64 = base64.b64encode(excel_data).decode()
-    href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="Estimate_vs_Bill_Comparison.xlsx">Download Excel Report</a>'
-    return href
+    try:
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            for name, df in comparison_result.items():
+                if not df.empty:
+                    df.to_excel(writer, sheet_name=name.capitalize(), index=True)
+                    
+        output.seek(0)
+        b64 = base64.b64encode(output.read()).decode()
+        return f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="Estimate_vs_Bill.xlsx">📥 Download Full Report</a>'
+    except Exception as e:
+        st.error(f"Excel Generation Error: {str(e)}")
+        return None
 
-# ===== Main App =====
+# ===== Main Application =====
 def main():
-    st.markdown('<div class="header">📊 Estimate vs Bill Comparison Tool</div>', unsafe_allow_html=True)
+    st.markdown('<div class="header">Estimate vs Bill Comparison Tool</div>', unsafe_allow_html=True)
+    st.markdown("Compare your estimate and bill documents to identify changes in pricing and parts.")
     
-    # Intro
-    st.markdown("""
-    Compare estimates and bills to identify:
-    - 🔺 Increased amounts
-    - 🔻 Reduced amounts
-    - 🆕 New parts
-    - ❌ Removed parts
-    """)
-    
-    # File Upload
-    with st.expander("Upload Documents", expanded=True):
+    with st.expander("📁 Upload Documents", expanded=True):
         col1, col2 = st.columns(2)
         with col1:
-            estimate_file = st.file_uploader("Upload Estimate PDF", type="pdf")
+            estimate_file = st.file_uploader("Upload Estimate PDF", type=["pdf"])
         with col2:
-            bill_file = st.file_uploader("Upload Bill PDF", type="pdf")
+            bill_file = st.file_uploader("Upload Bill PDF", type=["pdf"])
     
-    if st.button("Run Comparison", use_container_width=True, type="primary"):
+    if st.button("🔍 Compare Documents", use_container_width=True, type="primary"):
         if estimate_file is None or bill_file is None:
-            st.warning("Please upload both files")
+            st.warning("Please upload both estimate and bill documents")
             return
-        
+            
         with st.spinner("Processing documents..."):
-            # Extract data
-            df_estimate = extract_parts_from_pdf(estimate_file)
-            df_bill = extract_parts_from_pdf(bill_file)
-            
-            if df_estimate.empty or df_bill.empty:
-                st.error("Could not extract data. Check PDF formats and try again.")
+            # Processing estimate
+            estimate_df = safe_extract_parts(estimate_file)
+            if estimate_df.empty:
+                st.error("Failed to extract data from Estimate PDF")
                 return
-            
+                
+            # Processing bill
+            bill_df = safe_extract_parts(bill_file)
+            if bill_df.empty:
+                st.error("Failed to extract data from Bill PDF")
+                return
+                
             # Run comparison
-            comparison_result = compare_dataframes(df_estimate, df_bill)
+            comparison_result = safe_comparison(estimate_df, bill_df)
             
-            # Show summary metrics
-            st.success("Comparison completed!")
+            # Display results
+            st.success("Comparison completed successfully!")
             st.markdown("---")
             
-            cols = st.columns(4)
-            metric_data = [
-                ("Increased", len(comparison_result['increased']), "#dc3545", "🔺"),
-                ("Reduced", len(comparison_result['reduced']), "#28a745", "🔻"),
-                ("New", len(comparison_result['new']), "#17a2b8", "🆕"),
-                ("Removed", len(comparison_result['removed']), "#6c757d", "❌")
+            # Show summary metrics
+            metric_cols = st.columns(4)
+            metrics = [
+                ("🔺 Increased", len(comparison_result['increased']), "#e63946"),
+                ("🔻 Reduced", len(comparison_result['reduced']), "#2a9d8f"),
+                ("🆕 New", len(comparison_result['new']), "#1d3557"),
+                ("❌ Removed", len(comparison_result['removed']), "#6c757d")
             ]
             
-            for idx, (label, value, color, icon) in enumerate(metric_data):
-                with cols[idx]:
+            for idx, (label, value, color) in enumerate(metrics):
+                with metric_cols[idx]:
                     st.markdown(
                         f"""
-                        <div class="metric-card">
-                            <div style="font-size:24px;color:{color};margin-bottom:8px;">{icon}</div>
-                            <div style="font-size:14px;color:#6c757d;margin-bottom:4px;">{label}</div>
+                        <div class="metric-box">
+                            <div style="font-size:24px;color:{color};">{label}</div>
                             <div style="font-size:28px;font-weight:bold;color:{color};">{value}</div>
                         </div>
-                        """, 
+                        """,
                         unsafe_allow_html=True
                     )
             
-            # Detailed results tabs
-            with st.expander("Detailed Results", expanded=True):
-                tab1, tab2, tab3, tab4 = st.tabs([
-                    "🔺 Increased", 
-                    "🔻 Reduced", 
-                    "🆕 New", 
-                    "❌ Removed"
-                ])
-                
-                with tab1:
-                    if comparison_result['increased'] is not None and not comparison_result['increased'].empty:
-                        st.dataframe(comparison_result['increased'].style.applymap(
-                            lambda x: 'color: #dc3545' if isinstance(x, (int, float)) and x > 0 else ''
-                        ))
-                    else:
-                        st.info("No items with increased amounts found")
-                
-                with tab2:
-                    if comparison_result['reduced'] is not None and not comparison_result['reduced'].empty:
-                        st.dataframe(comparison_result['reduced'].style.applymap(
-                            lambda x: 'color: #28a745' if isinstance(x, (int, float)) and x < 0 else ''
-                        ))
-                    else:
-                        st.info("No items with reduced amounts found")
-                
-                with tab3:
-                    if comparison_result['new'] is not None and not comparison_result['new'].empty:
-                        st.dataframe(comparison_result['new'])
-                    else:
-                        st.info("No new items found")
-                
-                with tab4:
-                    if comparison_result['removed'] is not None and not comparison_result['removed'].empty:
-                        st.dataframe(comparison_result['removed'])
-                    else:
-                        st.info("No removed items found")
-            
-            # Download button
+            # Show detailed comparison tabs
             st.markdown("---")
-            st.markdown(generate_excel_report(comparison_result), unsafe_allow_html=True)
+            with st.expander("📊 Detailed Comparison Results", expanded=True):
+                tabs = st.tabs([tab[0] for tab in metrics])
+                
+                for i, (tab, key) in enumerate(zip(tabs, ['increased', 'reduced', 'new', 'removed'])):
+                    with tab:
+                        df = comparison_result[key]
+                        if not df.empty:
+                            st.dataframe(
+                                format_dataframe(df),
+                                use_container_width=True,
+                                height=400
+                            )
+                        else:
+                            st.info(f"No {key.replace('_', ' ')} parts found")
+            
+            # Excel download
+            st.markdown("---")
+            download_link = create_excel_download(comparison_result)
+            if download_link:
+                st.markdown(download_link, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
