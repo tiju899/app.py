@@ -5,6 +5,7 @@ import re
 import base64
 from io import BytesIO
 import tempfile
+from typing import Tuple  # Import Tuple for type hinting
 
 # ========================================================
 # 1. PDF PROCESSING ENGINE
