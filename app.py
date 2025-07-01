@@ -4,20 +4,34 @@ import pandas as pd
 import pdfplumber
 import os
 
+# Credentials
+USERNAME = "Tj.cgnr"
+PASSWORD = "Sarathy123"
+
+# ==============================
+# PDF Extractor and Comparator
+# ==============================
+
 def extract_parts_from_pdf(pdf_path):
     parts = []
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
             text = page.extract_text()
+            if not text:
+                continue
             lines = text.split('\n')
             for line in lines:
-                if any(char.isdigit() for char in line) and len(line.split()) >= 3:
-                    tokens = line.split()
+                tokens = line.strip().split()
+                if len(tokens) >= 3 and any(char.isdigit() for char in tokens[0]):
                     try:
                         part_number = tokens[0]
-                        amount = float(tokens[-1].replace(',', ''))
-                        desc = ' '.join(tokens[1:-1])
-                        parts.append({'Part Number': part_number, 'Description': desc, 'Amount': amount})
+                        amount = float(tokens[-1].replace(',', '').replace('₹', ''))
+                        description = ' '.join(tokens[1:-1])
+                        parts.append({
+                            "Part Number": part_number,
+                            "Description": description,
+                            "Amount": amount
+                        })
                     except:
                         continue
     return pd.DataFrame(parts)
@@ -37,9 +51,13 @@ def compare_and_export(est_df, bill_df, save_path):
         else:
             return 'Same'
 
-    merged['Status'] = merged.apply(get_status, axis=1)
+    merged["Status"] = merged.apply(get_status, axis=1)
     merged.to_excel(save_path, index=False)
     return save_path
+
+# ============================
+# File Selection and Compare
+# ============================
 
 def select_files():
     estimate_path = filedialog.askopenfilename(title="Select Initial Estimate PDF")
@@ -58,15 +76,51 @@ def select_files():
 
     save_path = os.path.join(os.path.dirname(estimate_path), "comparison_result.xlsx")
     compare_and_export(est_df, bill_df, save_path)
-    messagebox.showinfo("Done", f"Comparison complete.\nFile saved to:\n{save_path}")
+    messagebox.showinfo("Success", f"Comparison complete!\nSaved to:\n{save_path}")
 
-# GUI
-root = tk.Tk()
-root.title("EstimateComparer - Offline")
-root.geometry("400x200")
+# ======================
+# Login Screen Function
+# ======================
 
-tk.Label(root, text="EstimateComparer Tool", font=("Helvetica", 14, "bold")).pack(pady=20)
-tk.Button(root, text="Start Comparison", command=select_files, width=25, height=2, bg="#4CAF50", fg="white").pack(pady=10)
-tk.Label(root, text="Made for Sarathy | Offline Version").pack(side="bottom", pady=10)
+def login():
+    user = username_entry.get()
+    pwd = password_entry.get()
+    if user == USERNAME and pwd == PASSWORD:
+        login_window.destroy()
+        launch_main_app()
+    else:
+        messagebox.showerror("Login Failed", "Incorrect username or password.")
 
-root.mainloop()
+# ======================
+# Main App Window
+# ======================
+
+def launch_main_app():
+    main_app = tk.Tk()
+    main_app.title("EstimateComparer - Offline")
+    main_app.geometry("400x200")
+
+    tk.Label(main_app, text="EstimateComparer Tool", font=("Helvetica", 14, "bold")).pack(pady=20)
+    tk.Button(main_app, text="Start Comparison", command=select_files, width=25, height=2, bg="#4CAF50", fg="white").pack(pady=10)
+    tk.Label(main_app, text="Made for Sarathy | Offline Version").pack(side="bottom", pady=10)
+
+    main_app.mainloop()
+
+# ==================
+# Login GUI Setup
+# ==================
+
+login_window = tk.Tk()
+login_window.title("Login - EstimateComparer")
+login_window.geometry("300x200")
+
+tk.Label(login_window, text="Username").pack(pady=5)
+username_entry = tk.Entry(login_window)
+username_entry.pack()
+
+tk.Label(login_window, text="Password").pack(pady=5)
+password_entry = tk.Entry(login_window, show="*")
+password_entry.pack()
+
+tk.Button(login_window, text="Login", command=login, bg="#2E86C1", fg="white", width=15).pack(pady=20)
+login_window.mainloop()
