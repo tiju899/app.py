@@ -63,104 +63,168 @@ def safe_float_convert(value):
     except (ValueError, TypeError):
         return None
 
+def is_number(s):
+    """Checks if a string can be converted to a number (int or float)."""
+    try:
+        float(s.replace(',', ''))
+        return True
+    except ValueError:
+        return False
+
 # =============================================================================
-# 4. Specific PDF Extraction Functions
+# 4. Advanced PDF Extraction Functions
 # =============================================================================
 
-def extract_from_bill_pdf(doc):
+def extract_data_from_words(doc, doc_type):
     """
-    Extracts parts from the BILL.pdf format.
-    Uses a two-step approach for robust description parsing.
+    Extracts structured data (Part Number, Description, Amount) from PDF
+    using word coordinates, suitable for both Bill and Estimate formats.
     """
-    parts = []
-    # Pattern to find lines that start with a serial number and a part number
-    # and capture the rest of the line.
-    # Example line: 1 35321M74L01 UNIT, HEADLAMP LH 2347.45 1.000 0.00 1173.73 18%
-    line_pattern = re.compile(r"^\s*\d+\s+(?P<part_number>[A-Z0-9\-]+)\s+(?P<rest_of_line>.*)")
+    all_parts = []
+    
+    # Define expected headers and their approximate X-coordinates for column identification
+    # These values are based on the provided PDF examples and might need fine-tuning
+    # if your actual PDFs have different layouts.
+    if doc_type == 'bill':
+        # Headers from BILL.pdf: Srl. Part Number Description Rate Qty. Taxable Amount Tax Paid Amount
+        # We need: Part Number, Description, Taxable Amount
+        header_keywords = {
+            'Part Number': ['Part Number', 'Part No.'],
+            'Description': ['Description', 'Part Desc.'],
+            'Amount': ['Taxable Amount', 'Amount'] # Target amount for Bill
+        }
+        # Approximate X-coordinates for columns (left edge)
+        # These are crucial and might need adjustment based on your actual PDFs
+        col_x_ranges = {
+            'srl': (20, 60), # Srl.
+            'part_number': (60, 150), # Part Number
+            'description': (150, 400), # Description (wide range)
+            'rate': (400, 460), # Rate
+            'qty': (460, 510), # Qty.
+            'taxable_amount': (510, 580), # Taxable Amount (our target)
+            'tax_paid_amount': (580, 650) # Tax Paid Amount
+        }
+        amount_col_key = 'taxable_amount'
 
-    # Pattern to find the 'Taxable Amount' (the 4th float after the part number)
-    # and the preceding numbers (Rate, Qty, Tax Paid Amount)
-    # This pattern is applied to 'rest_of_line'
-    amount_pattern = re.compile(
-        r"(?:[\d,]+\.\d{2,3})\s+" +       # Rate (e.g., 2347.45)
-        r"(?:[\d,]+\.\d{2,3})\s+" +       # Qty (e.g., 1.000)
-        r"(?:[\d,]+\.\d{2,3})\s+" +       # Tax Paid Amount (e.g., 0.00)
-        r"(?P<amount>[\d,]+\.\d{2,3})"    # Taxable Amount (e.g., 1173.73) - our target
-    )
+    elif doc_type == 'estimate':
+        # Headers from ESTIMATE.pdf: S.No. Part No. Part Desc. MRP *Depreciation % Quantity Total Claimed Value Approved Amount
+        # We need: Part No., Part Desc., Approved Amount
+        header_keywords = {
+            'Part Number': ['Part No.', 'Part Number'],
+            'Description': ['Part Desc.', 'Description'],
+            'Amount': ['Approved Amount', 'Amount'] # Target amount for Estimate
+        }
+        # Approximate X-coordinates for columns (left edge)
+        col_x_ranges = {
+            'sno': (20, 60), # S.No.
+            'part_number': (60, 150), # Part No.
+            'description': (150, 350), # Part Desc. (wide range)
+            'mrp': (350, 400), # MRP
+            'depreciation': (400, 480), # *Depreciation %
+            'quantity_total': (480, 530), # Quantity Total
+            'claimed_value': (530, 600), # Claimed Value
+            'approved_amount': (600, 680) # Approved Amount (our target)
+        }
+        amount_col_key = 'approved_amount'
+    else:
+        st.error(f"Unknown document type: {doc_type}")
+        return []
 
-    for page in doc:
-        text = page.get_text()
-        for line in text.split('\n'):
-            line_match = line_pattern.search(line)
-            if line_match:
-                part_number = line_match.group('part_number').strip()
-                rest_of_line = line_match.group('rest_of_line').strip()
+    # Tolerance for Y-coordinates to group words into the same line
+    LINE_Y_TOLERANCE = 3 # pixels
 
-                amount_match = amount_pattern.search(rest_of_line)
-                if amount_match:
-                    amount = safe_float_convert(amount_match.group('amount'))
-                    # The description is everything between the part number and the first matched number sequence
-                    # Find the start of the first number sequence
-                    # This regex looks for any sequence of digits, commas, and dots that could be a number
-                    first_num_start = re.search(r"[\d,]+\.?\d*", rest_of_line)
-                    if first_num_start:
-                        description = rest_of_line[:first_num_start.start()].strip()
-                        parts.append({
-                            'Part Number': part_number,
-                            'Description': description,
-                            'Amount': amount
-                        })
-    return parts
+    for page_num, page in enumerate(doc):
+        words = page.get_text("words") # (x0, y0, x1, y1, word, block_no, line_no, word_no)
 
-def extract_from_estimate_pdf(doc):
-    """
-    Extracts parts from the ESTIMATE.pdf format.
-    Uses a two-step approach for robust description parsing.
-    """
-    parts = []
-    # Pattern to find lines that start with S.No., Part No.
-    # and capture the rest of the line.
-    # Example line: 1 69100M74L30 PANEL ASSY,BACK DOOR 6055 0 1 6055 6055 Replace
-    line_pattern = re.compile(r"^\s*\d+\s+(?P<part_number>[A-Z0-9\-]+)\s+(?P<rest_of_line>.*)")
+        # Group words by line (using y0 coordinate)
+        lines = {}
+        for word_info in words:
+            x0, y0, x1, y1, word_text, _, line_no, _ = word_info
+            
+            # Find the line this word belongs to
+            found_line = False
+            for existing_y in lines:
+                if abs(y0 - existing_y) <= LINE_Y_TOLERANCE:
+                    lines[existing_y].append(word_info)
+                    found_line = True
+                    break
+            if not found_line:
+                lines[y0] = [word_info]
+        
+        # Sort lines by Y-coordinate
+        sorted_y_coords = sorted(lines.keys())
 
-    # Pattern to find the 'Approved Amount' (the last float before 'Replace'/'Repair Allow')
-    # and the preceding numbers (MRP, Depreciation %, Quantity Total, Claimed Value)
-    # This pattern is applied to 'rest_of_line'
-    amount_pattern = re.compile(
-        r"(?:[\d,]+\.\d{2,3}|\d+)\s+" +   # MRP (e.g., 6055)
-        r"(?:[\d,]+\.\d{2,3}|\d+)\s+" +   # *Depreciation % (e.g., 0)
-        r"(?:[\d,]+\.\d{2,3}|\d+)\s+" +   # Quantity Total (e.g., 1)
-        r"(?:[\d,]+\.\d{2,3}|\d+)\s+" +   # Claimed Value (e.g., 6055)
-        r"(?P<amount>[\d,]+\.\d{2,3}|\d+)\s+" + # Approved Amount (e.g., 6055) - our target
-        r"(?:Replace|Repair Allow)"       # Service Type
-    )
+        # Process each line
+        for y_coord in sorted_y_coords:
+            line_words = sorted(lines[y_coord], key=lambda w: w[0]) # Sort words in line by X-coordinate
 
-    for page in doc:
-        text = page.get_text()
-        for line in text.split('\n'):
-            line_match = line_pattern.search(line)
-            if line_match:
-                part_number = line_match.group('part_number').strip()
-                rest_of_line = line_match.group('rest_of_line').strip()
+            current_part_number = None
+            current_description_words = []
+            current_amount = None
 
-                amount_match = amount_pattern.search(rest_of_line)
-                if amount_match:
-                    amount = safe_float_convert(amount_match.group('amount'))
-                    # The description is everything between the part number and the first matched number sequence
-                    # Find the start of the first number sequence
-                    first_num_start = re.search(r"[\d,]+\.?\d*", rest_of_line)
-                    if first_num_start:
-                        description = rest_of_line[:first_num_start.start()].strip()
-                        parts.append({
-                            'Part Number': part_number,
-                            'Description': description,
-                            'Amount': amount
-                        })
-    return parts
+            # Heuristic to identify data rows:
+            # A data row typically starts with a serial number (digit) and then a part number (alphanumeric)
+            # We'll look for a word that looks like a serial number in the first column range
+            # and a word that looks like a part number in the second column range.
+            
+            is_data_row = False
+            potential_srl = ""
+            potential_part_num = ""
+
+            for i, word_info in enumerate(line_words):
+                x0, y0, x1, y1, word_text, _, _, _ = word_info
+                
+                # Check for serial number in the first column
+                if col_x_ranges['srl'][0] <= x0 < col_x_ranges['srl'][1]:
+                    if word_text.isdigit():
+                        potential_srl = word_text
+                
+                # Check for part number in the second column
+                if col_x_ranges['part_number'][0] <= x0 < col_x_ranges['part_number'][1]:
+                    if re.match(r"^[A-Z0-9\-]+$", word_text): # Typical part number format
+                        potential_part_num = word_text
+                        if potential_srl: # If we also found a serial number, this is likely a data row
+                            is_data_row = True
+                            current_part_number = potential_part_num
+                            break # Found the start of a data row, process it below
+
+            if not is_data_row or not current_part_number:
+                continue # Not a data row, skip
+
+            # Now, re-process the line to extract description and amount based on identified columns
+            current_description_words = []
+            current_amount_str = None
+
+            for word_info in line_words:
+                x0, y0, x1, y1, word_text, _, _, _ = word_info
+
+                # Part Number (already identified, but ensure it's within its range)
+                if col_x_ranges['part_number'][0] <= x0 < col_x_ranges['part_number'][1] and word_text == current_part_number:
+                    pass # Already handled
+
+                # Description
+                elif col_x_ranges['description'][0] <= x0 < col_x_ranges['description'][1]:
+                    current_description_words.append(word_text)
+                
+                # Amount (Taxable Amount for Bill, Approved Amount for Estimate)
+                elif col_x_ranges[amount_col_key][0] <= x0 < col_x_ranges[amount_col_key][1]:
+                    if is_number(word_text):
+                        current_amount_str = word_text
+                        # Once we find the amount, we can stop looking for description words
+                        # that might appear after it in the same column range due to layout quirks.
+                        # This assumes amount is always to the right of description.
+                        
+            if current_part_number and current_amount_str:
+                all_parts.append({
+                    'Part Number': current_part_number,
+                    'Description': " ".join(current_description_words).strip(),
+                    'Amount': safe_float_convert(current_amount_str)
+                })
+    return all_parts
 
 def safe_extract_parts(pdf_file, doc_type):
     """
-    Dispatches to the correct PDF extraction function based on document type.
+    Dispatches to the advanced PDF extraction function.
     Handles temporary file creation and cleanup.
     Also extracts raw text for debugging.
     """
@@ -178,13 +242,7 @@ def safe_extract_parts(pdf_file, doc_type):
         for page in doc:
             raw_text += page.get_text() + "\n"
 
-        if doc_type == 'estimate':
-            parts = extract_from_estimate_pdf(doc)
-        elif doc_type == 'bill':
-            parts = extract_from_bill_pdf(doc)
-        else:
-            st.error("Invalid document type specified for extraction.")
-            return pd.DataFrame(), raw_text # Return empty DF and raw text
+        parts = extract_data_from_words(doc, doc_type)
             
         doc.close()
         return pd.DataFrame(parts), raw_text
@@ -201,7 +259,7 @@ def safe_extract_parts(pdf_file, doc_type):
                 pass
 
 # =============================================================================
-# 5. Comparison Logic
+# 5. Comparison Logic (remains the same as it operates on DataFrames)
 # =============================================================================
 def safe_comparison(estimate_df, bill_df):
     """
@@ -303,7 +361,7 @@ def safe_comparison(estimate_df, bill_df):
     return results
 
 # =============================================================================
-# 6. Display and Export Functions
+# 6. Display and Export Functions (remain the same)
 # =============================================================================
 def format_dataframe(df):
     """Applies consistent formatting to DataFrames for display."""
@@ -329,7 +387,6 @@ def create_excel_download(comparison_result):
                 break
         
         if not has_data:
-            # st.warning("No comparison data to export to Excel.") # Already handled by main()
             return None
 
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -375,14 +432,12 @@ def main():
             # Extract data from Estimate PDF
             estimate_df, st.session_state.estimate_raw_text = safe_extract_parts(estimate_file, 'estimate')
             if estimate_df.empty:
-                st.error("Failed to extract any valid part data from the Estimate PDF. Please ensure it matches the expected format.")
-                # Do not return here, allow raw text to be displayed for debugging
+                st.error("Failed to extract any valid part data from the Estimate PDF. This might be due to an unexpected format or layout.")
                 
             # Extract data from Bill PDF
             bill_df, st.session_state.bill_raw_text = safe_extract_parts(bill_file, 'bill')
             if bill_df.empty:
-                st.error("Failed to extract any valid part data from the Bill PDF. Please ensure it matches the expected format.")
-                # Do not return here, allow raw text to be displayed for debugging
+                st.error("Failed to extract any valid part data from the Bill PDF. This might be due to an unexpected format or layout.")
                 
             # Debug: Show extracted raw dataframes
             with st.expander("⚙️ Debug: Raw Extracted Data (for troubleshooting)", expanded=False):
@@ -448,15 +503,15 @@ def main():
                 else:
                     st.info("No data available to generate an Excel report.")
             else:
-                st.warning("Comparison could not be performed due to extraction errors in one or both documents.")
+                st.warning("Comparison could not be performed due to extraction errors in one or both documents. Please check the raw text and column ranges for debugging.")
 
     # Always show raw text for debugging after processing attempt
-    with st.expander("⚙️ Debug: Raw PDF Text (for regex testing)", expanded=False):
+    with st.expander("⚙️ Debug: Raw PDF Text (for column range tuning)", expanded=False):
         st.subheader("Estimate PDF Raw Text:")
         st.text_area("Estimate Raw Text", st.session_state.estimate_raw_text, height=300, key="estimate_raw_text_display")
         st.subheader("Bill PDF Raw Text:")
         st.text_area("Bill Raw Text", st.session_state.bill_raw_text, height=300, key="bill_raw_text_display")
-        st.info("Copy the raw text above and test your regex patterns on a site like regex101.com to refine them.")
+        st.info("If extraction fails, examine the raw text above. The `col_x_ranges` in `extract_data_from_words` might need adjustment based on the X-coordinates of your columns.")
 
 
 if __name__ == "__main__":
