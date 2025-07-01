@@ -58,14 +58,14 @@ st.markdown("""
 def safe_float_convert(value):
     """Convert string to float with error handling."""
     try:
-        return float(str(value).replace(',', ''))
+        return float(str(value).replace(',', '').replace('₹', '').strip())
     except (ValueError, TypeError):
         return None
 
 def is_number(s):
     """Checks if a string can be converted to a number (int or float)."""
     try:
-        float(s.replace(',', ''))
+        float(s.replace(',', '').replace('₹', '').strip())
         return True
     except ValueError:
         return False
@@ -83,7 +83,7 @@ def extract_data_from_words(doc):
     
     # Define regex patterns for part numbers, descriptions, and amounts
     part_number_pattern = re.compile(r"^[A-Z0-9\-\/]+$")
-    amount_pattern = re.compile(r"^\d+(\.\d{1,2})?$")  # Matches integers and floats with up to 2 decimal places
+    amount_pattern = re.compile(r"^\₹?\d+(\.\d{1,2})?$")  # Matches integers and floats with up to 2 decimal places
 
     for page_num, page in enumerate(doc):
         words = page.get_text("words")  # (x0, y0, x1, y1, word, block_no, line_no, word_no)
@@ -180,7 +180,7 @@ def safe_extract_parts(pdf_file):
 def safe_comparison(estimate_df, bill_df):
     """
     Performs a safe comparison between estimate and bill DataFrames.
-    Identifies increased, reduced, new, and removed parts.
+    Identifies increased, reduced, new, and missing parts.
     """
     results = []
 
