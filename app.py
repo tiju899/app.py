@@ -83,18 +83,8 @@ def extract_data_from_words(doc, doc_type):
     all_parts = []
     
     # Define expected headers and their approximate X-coordinates for column identification
-    # These values are based on the provided PDF examples and might need fine-tuning
-    # if your actual PDFs have different layouts.
     if doc_type == 'bill':
-        # Headers from BILL.pdf: Srl. Part Number Description Rate Qty. Taxable Amount Tax Paid Amount
-        # We need: Part Number, Description, Taxable Amount
-        header_keywords = {
-            'Part Number': ['Part Number', 'Part No.'],
-            'Description': ['Description', 'Part Desc.'],
-            'Amount': ['Taxable Amount', 'Amount'] # Target amount for Bill
-        }
         # Approximate X-coordinates for columns (left edge)
-        # These are crucial and might need adjustment based on your actual PDFs
         col_x_ranges = {
             'srl': (20, 60), # Srl.
             'part_number': (60, 150), # Part Number
@@ -107,16 +97,9 @@ def extract_data_from_words(doc, doc_type):
         amount_col_key = 'taxable_amount'
 
     elif doc_type == 'estimate':
-        # Headers from ESTIMATE.pdf: S.No. Part No. Part Desc. MRP *Depreciation % Quantity Total Claimed Value Approved Amount
-        # We need: Part No., Part Desc., Approved Amount
-        header_keywords = {
-            'Part Number': ['Part No.', 'Part Number'],
-            'Description': ['Part Desc.', 'Description'],
-            'Amount': ['Approved Amount', 'Amount'] # Target amount for Estimate
-        }
         # Approximate X-coordinates for columns (left edge)
         col_x_ranges = {
-            'sno': (20, 60), # S.No.
+            'srl': (20, 60), # S.No.
             'part_number': (60, 150), # Part No.
             'description': (150, 350), # Part Desc. (wide range)
             'mrp': (350, 400), # MRP
@@ -163,10 +146,6 @@ def extract_data_from_words(doc, doc_type):
             current_amount = None
 
             # Heuristic to identify data rows:
-            # A data row typically starts with a serial number (digit) and then a part number (alphanumeric)
-            # We'll look for a word that looks like a serial number in the first column range
-            # and a word that looks like a part number in the second column range.
-            
             is_data_row = False
             potential_srl = ""
             potential_part_num = ""
@@ -210,9 +189,6 @@ def extract_data_from_words(doc, doc_type):
                 elif col_x_ranges[amount_col_key][0] <= x0 < col_x_ranges[amount_col_key][1]:
                     if is_number(word_text):
                         current_amount_str = word_text
-                        # Once we find the amount, we can stop looking for description words
-                        # that might appear after it in the same column range due to layout quirks.
-                        # This assumes amount is always to the right of description.
                         
             if current_part_number and current_amount_str:
                 all_parts.append({
@@ -468,51 +444,3 @@ def main():
                         st.markdown(
                             f"""
                             <div class="metric-box">
-                                <div style="font-size:24px;color:{color};">{label}</div>
-                                <div style="font-size:28px;font-weight:bold;color:{color};">{value}</div>
-                            </div>
-                            """,
-                            unsafe_allow_html=True
-                        )
-                
-                # Display detailed comparison results in tabs
-                st.markdown("---")
-                with st.expander("📊 Detailed Comparison Results", expanded=True):
-                    tabs_labels = [tab[0] for tab in metrics]
-                    tabs_keys = ['increased', 'reduced', 'new', 'removed']
-                    
-                    tabs = st.tabs(tabs_labels)
-                    
-                    for i, tab in enumerate(tabs):
-                        with tab:
-                            df = comparison_result[tabs_keys[i]]
-                            if not df.empty:
-                                st.dataframe(
-                                    format_dataframe(df),
-                                    use_container_width=True,
-                                    height=400
-                                )
-                            else:
-                                st.info(f"No {tabs_keys[i].replace('_', ' ')} parts found in this category.")
-                
-                # Excel download link
-                st.markdown("---")
-                download_link = create_excel_download(comparison_result)
-                if download_link:
-                    st.markdown(download_link, unsafe_allow_html=True)
-                else:
-                    st.info("No data available to generate an Excel report.")
-            else:
-                st.warning("Comparison could not be performed due to extraction errors in one or both documents. Please check the raw text and column ranges for debugging.")
-
-    # Always show raw text for debugging after processing attempt
-    with st.expander("⚙️ Debug: Raw PDF Text (for column range tuning)", expanded=False):
-        st.subheader("Estimate PDF Raw Text:")
-        st.text_area("Estimate Raw Text", st.session_state.estimate_raw_text, height=300, key="estimate_raw_text_display")
-        st.subheader("Bill PDF Raw Text:")
-        st.text_area("Bill Raw Text", st.session_state.bill_raw_text, height=300, key="bill_raw_text_display")
-        st.info("If extraction fails, examine the raw text above. The `col_x_ranges` in `extract_data_from_words` might need adjustment based on the X-coordinates of your columns.")
-
-
-if __name__ == "__main__":
-    main()
