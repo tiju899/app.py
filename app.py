@@ -6,7 +6,7 @@ import io
 import re
 from io import BytesIO
 
-st.set_page_config(page_title="Estimate vs Bill Comparison Tool", layout="centered")
+st.set_page_config(page_title="Estimate vs Final Bill – Part Comparison", layout="centered")
 
 # --- OCR fallback ---
 def ocr_text_from_pdf(uploaded_file):
@@ -19,8 +19,12 @@ def ocr_text_from_pdf(uploaded_file):
         st.error(f"OCR fallback failed: {e}")
     return text
 
-# --- Extract parts from PDF ---
-def extract_parts_from_pdf(uploaded_file):
+# --- Part Number Validation ---
+def is_valid_part_number(part):
+    return re.match(r"^[A-Z0-9]{5,}(-\w+)?$", part) and not part.lower().startswith(("jc", "sub", "sgst", "cgst"))
+
+# --- Extract parts ---
+def extract_parts_from_pdf(uploaded_file, source="estimate"):
     parts = []
     if not uploaded_file:
         return parts
@@ -41,27 +45,35 @@ def extract_parts_from_pdf(uploaded_file):
 
     lines = text.splitlines()
     for line in lines:
-        line = line.strip()
-        if not line or len(line) < 10:
+        tokens = re.split(r'\s{2,}', line.strip())
+        if len(tokens) < 2:
             continue
-        tokens = re.split(r'\s{2,}', line)
-        if len(tokens) >= 2:
-            try:
-                amount = float(tokens[-1].replace(",", "").replace("₹", ""))
-                desc = " ".join(tokens[1:-1])
-                part = tokens[0]
-                # Filter out invalid part numbers (like JC25000962, Sub, SGST etc)
-                if re.match(r"^[A-Z0-9\-]{6,}$", part):
-                    parts.append({
-                        "Part Number": part,
-                        "Description": desc,
-                        "Amount": amount
-                    })
-            except:
-                continue
+
+        part = tokens[0].strip()
+        try:
+            amt_raw = tokens[-1].replace(",", "").replace("₹", "")
+            amount = float(re.search(r"[\d.]+", amt_raw).group())
+        except:
+            continue
+
+        desc = " ".join(tokens[1:-1]).strip()
+
+        if not is_valid_part_number(part):
+            continue
+
+        # Avoid subtotal or tax lines
+        if any(x in desc.lower() for x in ["total", "amount", "sgst", "cgst", "round", "sub"]):
+            continue
+
+        parts.append({
+            "Part Number": part,
+            "Description": desc,
+            "Amount": amount
+        })
+
     return parts
 
-# --- Compare Estimates vs Bill ---
+# --- Compare ---
 def compare_parts(est_parts, bill_parts, est_no, bill_no):
     df_est = pd.DataFrame(est_parts)
     df_bill = pd.DataFrame(bill_parts)
@@ -93,7 +105,6 @@ def compare_parts(est_parts, bill_parts, est_no, bill_no):
     df_merged["Estimate No"] = est_no
     df_merged["Bill No"] = bill_no
 
-    # Format money
     df_merged["Amount Estimate"] = df_merged["Amount Estimate"].apply(lambda x: f"₹{x:,.2f}" if pd.notna(x) else "–")
     df_merged["Amount Bill"] = df_merged["Amount Bill"].apply(lambda x: f"₹{x:,.2f}" if pd.notna(x) else "–")
     df_merged["Description Estimate"] = df_merged["Description Estimate"].fillna("*(not in estimate)*")
@@ -121,8 +132,8 @@ with col2:
 
 if est_file and bill_file:
     with st.spinner("🔍 Extracting parts and comparing..."):
-        est_parts = extract_parts_from_pdf(est_file)
-        bill_parts = extract_parts_from_pdf(bill_file)
+        est_parts = extract_parts_from_pdf(est_file, "estimate")
+        bill_parts = extract_parts_from_pdf(bill_file, "bill")
 
         if not est_parts:
             st.error("❌ Estimate PDF didn't contain usable part data.")
@@ -136,7 +147,6 @@ if est_file and bill_file:
             st.success("✅ Comparison completed!")
             st.dataframe(result_df, use_container_width=True)
 
-            # Download Excel
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 result_df.to_excel(writer, index=False, sheet_name="Comparison")
