@@ -209,7 +209,7 @@ def safe_extract_parts(pdf_file, doc_type):
     temp_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(pdf_file.read())
+            tmp.write(ppdf_file.read())
             temp_path = tmp.name
         
         doc = fitz.open(temp_path)
@@ -235,7 +235,7 @@ def safe_extract_parts(pdf_file, doc_type):
                 pass
 
 # =============================================================================
-# 5. Comparison Logic (remains the same as it operates on DataFrames)
+# 5. Comparison Logic
 # =============================================================================
 def safe_comparison(estimate_df, bill_df):
     """
@@ -337,7 +337,7 @@ def safe_comparison(estimate_df, bill_df):
     return results
 
 # =============================================================================
-# 6. Display and Export Functions (remain the same)
+# 6. Display and Export Functions
 # =============================================================================
 def format_dataframe(df):
     """Applies consistent formatting to DataFrames for display."""
@@ -444,3 +444,51 @@ def main():
                         st.markdown(
                             f"""
                             <div class="metric-box">
+                                <div style="font-size:24px;color:{color};">{label}</div>
+                                <div style="font-size:28px;font-weight:bold;color:{color};">{value}</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+                
+                # Display detailed comparison results in tabs
+                st.markdown("---")
+                with st.expander("📊 Detailed Comparison Results", expanded=True):
+                    tabs_labels = [tab[0] for tab in metrics]
+                    tabs_keys = ['increased', 'reduced', 'new', 'removed']
+                    
+                    tabs = st.tabs(tabs_labels)
+                    
+                    for i, tab in enumerate(tabs):
+                        with tab:
+                            df = comparison_result[tabs_keys[i]]
+                            if not df.empty:
+                                st.dataframe(
+                                    format_dataframe(df),
+                                    use_container_width=True,
+                                    height=400
+                                )
+                            else:
+                                st.info(f"No {tabs_keys[i].replace('_', ' ')} parts found in this category.")
+                
+                # Excel download link
+                st.markdown("---")
+                download_link = create_excel_download(comparison_result)
+                if download_link:
+                    st.markdown(download_link, unsafe_allow_html=True)
+                else:
+                    st.info("No data available to generate an Excel report.")
+            else:
+                st.warning("Comparison could not be performed due to extraction errors in one or both documents. Please check the raw text and column ranges for debugging.")
+
+    # Always show raw text for debugging after processing attempt
+    with st.expander("⚙️ Debug: Raw PDF Text (for column range tuning)", expanded=False):
+        st.subheader("Estimate PDF Raw Text:")
+        st.text_area("Estimate Raw Text", st.session_state.estimate_raw_text, height=300, key="estimate_raw_text_display")
+        st.subheader("Bill PDF Raw Text:")
+        st.text_area("Bill Raw Text", st.session_state.bill_raw_text, height=300, key="bill_raw_text_display")
+        st.info("If extraction fails, examine the raw text above. The `col_x_ranges` in `extract_data_from_words` might need adjustment based on the X-coordinates of your columns.")
+
+
+if __name__ == "__main__":
+    main()
