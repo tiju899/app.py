@@ -1,79 +1,57 @@
-import streamlit as st
 import pandas as pd
-import pdfplumber
 import fitz  # PyMuPDF
 import io
 import re
 from io import BytesIO
 
-st.set_page_config(page_title="Estimate vs Final Bill – Part Comparison", layout="centered")
+# NOTE: This version does not use streamlit, for environments where streamlit is not available
 
-# --- OCR fallback ---
-def ocr_text_from_pdf(uploaded_file):
+# --- OCR text extraction ---
+def extract_text_from_pdf(uploaded_file):
     text = ""
     try:
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         for page in doc:
             text += page.get_text()
     except Exception as e:
-        st.error(f"OCR fallback failed: {e}")
+        print(f"OCR failed: {e}")
     return text
 
-# --- Part Number Validation ---
-def is_valid_part_number(part):
-    return re.match(r"^[A-Z0-9]{5,}(-\w+)?$", part) and not part.lower().startswith(("jc", "sub", "sgst", "cgst"))
-
-# --- Extract parts ---
-def extract_parts_from_pdf(uploaded_file, source="estimate"):
+# --- Extract parts from Estimate PDF (inclusive of tax) ---
+def extract_estimate_parts(text):
     parts = []
-    if not uploaded_file:
-        return parts
-
-    text = ""
-    try:
-        with pdfplumber.open(uploaded_file) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
-    except:
-        uploaded_file.seek(0)
-        text = ocr_text_from_pdf(uploaded_file)
-
-    if not text.strip():
-        return parts
-
     lines = text.splitlines()
     for line in lines:
-        tokens = re.split(r'\s{2,}', line.strip())
-        if len(tokens) < 2:
-            continue
-
-        part = tokens[0].strip()
-        try:
-            amt_raw = tokens[-1].replace(",", "").replace("₹", "")
-            amount = float(re.search(r"[\d.]+", amt_raw).group())
-        except:
-            continue
-
-        desc = " ".join(tokens[1:-1]).strip()
-
-        if not is_valid_part_number(part):
-            continue
-
-        # Avoid subtotal or tax lines
-        if any(x in desc.lower() for x in ["total", "amount", "sgst", "cgst", "round", "sub"]):
-            continue
-
-        parts.append({
-            "Part Number": part,
-            "Description": desc,
-            "Amount": amount
-        })
-
+        match = re.search(r"\b([A-Z0-9]{6,})\b\s+(.*?)\s+(\d+[.]?\d*)\s+\d\s+\d\s+(\d+[.]?\d*)", line)
+        if match:
+            part_no = match.group(1)
+            desc = match.group(2).strip()
+            amt = float(match.group(4))
+            parts.append({
+                "Part Number": part_no,
+                "Description": desc,
+                "Amount": amt
+            })
     return parts
 
-# --- Compare ---
+# --- Extract parts from Bill PDF (exclusive of tax) ---
+def extract_bill_parts(text):
+    parts = []
+    lines = text.splitlines()
+    for line in lines:
+        match = re.search(r"\b([A-Z0-9]{6,})\b\s+(.*?)\s+(\d+[.]\d{2})\s+[\d.]+\s+[\d.]+\s+(\d+[.]\d{2})", line)
+        if match:
+            part_no = match.group(1)
+            desc = match.group(2).strip()
+            amt = float(match.group(4))
+            parts.append({
+                "Part Number": part_no,
+                "Description": desc,
+                "Amount": amt
+            })
+    return parts
+
+# --- Compare Estimates vs Bill ---
 def compare_parts(est_parts, bill_parts, est_no, bill_no):
     df_est = pd.DataFrame(est_parts)
     df_bill = pd.DataFrame(bill_parts)
@@ -121,41 +99,39 @@ def compare_parts(est_parts, bill_parts, est_no, bill_no):
         "Status"
     ]]
 
-# --- UI ---
-st.title("📊 Estimate vs Final Bill – Part Comparison")
+# --- Console CLI Runner ---
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) != 3:
+        print("Usage: python compare_parts.py <estimate.pdf> <bill.pdf>")
+        sys.exit(1)
 
-col1, col2 = st.columns(2)
-with col1:
-    est_file = st.file_uploader("📎 Upload Estimate PDF", type="pdf", key="est")
-with col2:
-    bill_file = st.file_uploader("📎 Upload Final Bill PDF", type="pdf", key="bill")
+    estimate_path = sys.argv[1]
+    bill_path = sys.argv[2]
 
-if est_file and bill_file:
-    with st.spinner("🔍 Extracting parts and comparing..."):
-        est_parts = extract_parts_from_pdf(est_file, "estimate")
-        bill_parts = extract_parts_from_pdf(bill_file, "bill")
+    with open(estimate_path, "rb") as f:
+        est_text = extract_text_from_pdf(f)
 
-        if not est_parts:
-            st.error("❌ Estimate PDF didn't contain usable part data.")
-        elif not bill_parts:
-            st.error("❌ Bill PDF didn't contain usable part data.")
-        else:
-            est_no = est_file.name
-            bill_no = bill_file.name
-            result_df = compare_parts(est_parts, bill_parts, est_no, bill_no)
+    with open(bill_path, "rb") as f:
+        bill_text = extract_text_from_pdf(f)
 
-            st.success("✅ Comparison completed!")
-            st.dataframe(result_df, use_container_width=True)
+    est_parts = extract_estimate_parts(est_text)
+    bill_parts = extract_bill_parts(bill_text)
 
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                result_df.to_excel(writer, index=False, sheet_name="Comparison")
+    if not est_parts:
+        print("❌ Estimate PDF didn't contain usable part data.")
+    elif not bill_parts:
+        print("❌ Bill PDF didn't contain usable part data.")
+    else:
+        est_no = estimate_path
+        bill_no = bill_path
+        result_df = compare_parts(est_parts, bill_parts, est_no, bill_no)
 
-            st.download_button(
-                "⬇️ Download Excel",
-                data=output.getvalue(),
-                file_name="Estimate_vs_Bill.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-else:
-    st.info("📁 Please upload both Estimate and Bill PDFs to begin.")
+        print("✅ Comparison completed!")
+        print(result_df.to_string(index=False))
+
+        output_file = "Estimate_vs_Bill.xlsx"
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            result_df.to_excel(writer, index=False, sheet_name="Comparison")
+
+        print(f"Excel file saved: {output_file}")
