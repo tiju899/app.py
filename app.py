@@ -182,99 +182,42 @@ def safe_comparison(estimate_df, bill_df):
     Performs a safe comparison between estimate and bill DataFrames.
     Identifies increased, reduced, new, and removed parts.
     """
-    results = {
-        'increased': pd.DataFrame(),
-        'reduced': pd.DataFrame(),
-        'new': pd.DataFrame(),
-        'removed': pd.DataFrame()
-    }
-    
-    try:
-        if estimate_df.empty and bill_df.empty:
-            return results
-        if estimate_df.empty:  # All bill items are 'new' if estimate is empty
-            results['new'] = bill_df.copy().rename(columns={'Amount': 'Amount_bill'})
-            return results
-        if bill_df.empty:  # All estimate items are 'removed' if bill is empty
-            results['removed'] = estimate_df.copy().rename(columns={'Amount': 'Amount_estimate'})
-            return results
-            
-        # Standardize column names (strip whitespace)
-        estimate_df = estimate_df.rename(columns=lambda x: x.strip())
-        bill_df = bill_df.rename(columns=lambda x: x.strip())
-        
-        # Ensure required columns exist
-        required_cols = ['Part Number', 'Description', 'Amount']
-        for col in required_cols:
-            if col not in estimate_df.columns:
-                st.error(f"Estimate DataFrame missing required column: '{col}'")
-                return results
-            if col not in bill_df.columns:
-                st.error(f"Bill DataFrame missing required column: '{col}'")
-                return results
-                
-        # Set 'Part Number' as index for merging
-        estimate_df = estimate_df.set_index('Part Number')
-        bill_df = bill_df.set_index('Part Number')
-        
-        # Rename 'Amount' columns to distinguish them after merge
-        bill_df = bill_df.rename(columns={'Amount': 'Amount_bill', 'Description': 'Description_bill'})
-        estimate_df = estimate_df.rename(columns={'Amount': 'Amount_estimate', 'Description': 'Description_estimate'})
-        
-        # Perform an outer merge to capture all items from both DataFrames
-        merged_df = bill_df.merge(
-            estimate_df,
-            how='outer',
-            left_index=True,
-            right_index=True,
-            suffixes=('_bill', '_estimate'),  # This suffix is now redundant due to explicit renaming
-            indicator=True  # Adds a column indicating merge source
-        )
-        
-        # Ensure 'Amount_bill' and 'Amount_estimate' columns exist after merge
-        # Fill NaN values with 0 for numerical comparisons
-        merged_df['Amount_bill'] = merged_df['Amount_bill'].fillna(0)
-        merged_df['Amount_estimate'] = merged_df['Amount_estimate'].fillna(0)
+    results = []
 
-        # Identify increased, reduced, new, and removed items
-        increased_mask = (
-            (merged_df['Amount_bill'] > merged_df['Amount_estimate']) &
-            (merged_df['_merge'] == 'both')
-        )
-        reduced_mask = (
-            (merged_df['Amount_bill'] < merged_df['Amount_estimate']) &
-            (merged_df['_merge'] == 'both')
-        )
-        new_mask = (merged_df['_merge'] == 'left_only')  # In bill, not in estimate
-        removed_mask = (merged_df['_merge'] == 'right_only')  # In estimate, not in bill
+    # Merge the two DataFrames on 'Part Number'
+    merged_df = pd.merge(estimate_df, bill_df, on='Part Number', how='outer', suffixes=('_estimate', '_bill'))
 
-        # Populate results dictionary
-        if not merged_df[increased_mask].empty:
-            results['increased'] = merged_df[increased_mask].copy()
-            results['increased'] = results['increased'][['Description_bill', 'Amount_bill', 'Amount_estimate']]
-            results['increased'].columns = ['Description', 'Bill Amount', 'Estimate Amount']
+    # Iterate through the merged DataFrame to determine status
+    for index, row in merged_df.iterrows():
+        part_number = row['Part Number']
+        description = row['Description_estimate'] if 'Description_estimate' in row else row['Description_bill']
+        estimate_amount = row['Amount_estimate'] if 'Amount_estimate' in row else None
+        bill_amount = row['Amount_bill'] if 'Amount_bill' in row else None
 
-        if not merged_df[reduced_mask].empty:
-            results['reduced'] = merged_df[reduced_mask].copy()
-            results['reduced'] = results['reduced'][['Description_bill', 'Amount_bill', 'Amount_estimate']]
-            results['reduced'].columns = ['Description', 'Bill Amount', 'Estimate Amount']
+        # Determine status
+        if pd.isna(estimate_amount) and pd.notna(bill_amount):
+            status = "🆕 New"
+        elif pd.notna(estimate_amount) and pd.isna(bill_amount):
+            status = "❌ Missing"
+        elif pd.notna(estimate_amount) and pd.notna(bill_amount):
+            if estimate_amount > bill_amount:
+                status = "🔽 Reduced"
+            elif estimate_amount < bill_amount:
+                status = "🔺 Increased"
+            else:
+                status = "✅ Same"
+        else:
+            status = "Unknown"
 
-        if not merged_df[new_mask].empty:
-            results['new'] = merged_df[new_mask].copy()
-            results['new'] = results['new'][['Description_bill', 'Amount_bill']]
-            results['new'].columns = ['Description', 'Bill Amount']
+        results.append({
+            'Part Number': part_number,
+            'Description': description,
+            'Initial Estimate': f"₹{estimate_amount:,.2f}" if estimate_amount is not None else "Not in Estimate",
+            'Final Bill': f"₹{bill_amount:,.2f}" if bill_amount is not None else "Not in Bill",
+            'Status': status
+        })
 
-        if not merged_df[removed_mask].empty:
-            results['removed'] = merged_df[removed_mask].copy()
-            results['removed'] = results['removed'][['Description_estimate', 'Amount_estimate']]
-            results['removed'].columns = ['Description', 'Estimate Amount']
-
-    except Exception as e:
-        st.error(f"Comparison Logic Error: {str(e)}")
-        # Return empty dataframes on error to prevent further issues
-        return {k: pd.DataFrame() for k in results}
-        
-    return results
+    return pd.DataFrame(results)
 
 # =============================================================================
 # 6. Display and Export Functions
@@ -296,21 +239,13 @@ def create_excel_download(comparison_result):
     output = BytesIO()
     try:
         # Check if there's any data to write to Excel
-        has_data = False
-        for name, df in comparison_result.items():
-            if not df.empty:
-                has_data = True
-                break
+        has_data = not comparison_result.empty
         
         if not has_data:
             return None
 
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            for name, df in comparison_result.items():
-                if not df.empty:
-                    # Reset index to include 'Part Number' as a column in Excel
-                    df_to_export = df.reset_index()
-                    df_to_export.to_excel(writer, sheet_name=name.capitalize(), index=False)
+            comparison_result.to_excel(writer, sheet_name='Comparison', index=False)
                     
         output.seek(0)
         b64 = base64.b64encode(output.read()).decode()
@@ -370,47 +305,10 @@ def main():
                 st.success("Comparison completed successfully!")
                 st.markdown("---")
                 
-                # Display summary metrics
-                metric_cols = st.columns(4)
-                metrics = [
-                    ("🔺 Increased", len(comparison_result['increased']), "#e63946"),
-                    ("🔻 Reduced", len(comparison_result['reduced']), "#2a9d8f"),
-                    ("🆕 New", len(comparison_result['new']), "#1d3557"),
-                    ("❌ Removed", len(comparison_result['removed']), "#6c757d")
-                ]
-                
-                for idx, (label, value, color) in enumerate(metrics):
-                    with metric_cols[idx]:
-                        st.markdown(
-                            f"""
-                            <div class="metric-box">
-                                <div style="font-size:24px;color:{color};">{label}</div>
-                                <div style="font-size:28px;font-weight:bold;color:{color};">{value}</div>
-                            </div>
-                            """,
-                            unsafe_allow_html=True
-                        )
-                
-                # Display detailed comparison results in tabs
-                st.markdown("---")
-                with st.expander("📊 Detailed Comparison Results", expanded=True):
-                    tabs_labels = [tab[0] for tab in metrics]
-                    tabs_keys = ['increased', 'reduced', 'new', 'removed']
-                    
-                    tabs = st.tabs(tabs_labels)
-                    
-                    for i, tab in enumerate(tabs):
-                        with tab:
-                            df = comparison_result[tabs_keys[i]]
-                            if not df.empty:
-                                st.dataframe(
-                                    format_dataframe(df),
-                                    use_container_width=True,
-                                    height=400
-                                )
-                            else:
-                                st.info(f"No {tabs_keys[i].replace('_', ' ')} parts found in this category.")
-                
+                # Display the comparison table
+                st.subheader("Comparison Results")
+                st.dataframe(format_dataframe(comparison_result), use_container_width=True)
+
                 # Excel download link
                 st.markdown("---")
                 download_link = create_excel_download(comparison_result)
@@ -418,8 +316,6 @@ def main():
                     st.markdown(download_link, unsafe_allow_html=True)
                 else:
                     st.info("No data available to generate an Excel report.")
-            else:
-                st.warning("Comparison could not be performed due to extraction errors in one or both documents. Please check the raw text and column ranges for debugging.")
 
     # Always show raw text for debugging after processing attempt
     with st.expander("⚙️ Debug: Raw PDF Text (for column range tuning)", expanded=False):
