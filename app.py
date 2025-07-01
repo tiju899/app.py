@@ -6,14 +6,18 @@ import base64
 from io import BytesIO
 import tempfile
 
-# App Configuration
+# =============================================================================
+# 1. App Configuration
+# =============================================================================
 st.set_page_config(
     page_title="Estimate vs Bill Comparison Tool",
     page_icon="📊",
     layout="wide"
 )
 
-# ===== Custom Styling =====
+# =============================================================================
+# 2. Custom Styling
+# =============================================================================
 st.markdown("""
 <style>
     .header {
@@ -48,9 +52,114 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ===== PDF Processing Functions =====
-def safe_extract_parts(pdf_file):
-    """Safely extract parts from PDF with enhanced error handling"""
+# =============================================================================
+# 3. Helper Functions
+# =============================================================================
+def safe_float_convert(value):
+    """Convert string to float with error handling."""
+    try:
+        # Remove commas, then convert to float
+        return float(str(value).replace(',', ''))
+    except (ValueError, TypeError):
+        return None
+
+# =============================================================================
+# 4. Specific PDF Extraction Functions
+# =============================================================================
+
+def extract_from_bill_pdf(doc):
+    """
+    Extracts parts from the BILL.pdf format.
+    Uses a two-step approach for robust description parsing.
+    """
+    parts = []
+    # Pattern to find lines that start with a serial number and a part number
+    # and capture the rest of the line.
+    line_pattern = re.compile(r"^\s*\d+\s+(?P<part_number>[A-Z0-9\-]+)\s+(?P<rest_of_line>.*)")
+
+    # Pattern to find the 'Taxable Amount' (the 4th float after the part number)
+    # and the preceding numbers (Rate, Qty, Tax Paid Amount)
+    # This pattern is applied to 'rest_of_line'
+    amount_pattern = re.compile(
+        r"(?:[\d,]+\.\d{2,3})\s+" +       # Rate
+        r"(?:[\d,]+\.\d{2,3})\s+" +       # Qty
+        r"(?:[\d,]+\.\d{2,3})\s+" +       # Tax Paid Amount
+        r"(?P<amount>[\d,]+\.\d{2,3})"    # Taxable Amount (our target)
+    )
+
+    for page in doc:
+        text = page.get_text()
+        for line in text.split('\n'):
+            line_match = line_pattern.search(line)
+            if line_match:
+                part_number = line_match.group('part_number').strip()
+                rest_of_line = line_match.group('rest_of_line').strip()
+
+                amount_match = amount_pattern.search(rest_of_line)
+                if amount_match:
+                    amount = safe_float_convert(amount_match.group('amount'))
+                    # The description is everything between the part number and the first matched number sequence
+                    # Find the start of the first number sequence
+                    first_num_start = re.search(r"[\d,]+\.\d{2,3}", rest_of_line)
+                    if first_num_start:
+                        description = rest_of_line[:first_num_start.start()].strip()
+                        parts.append({
+                            'Part Number': part_number,
+                            'Description': description,
+                            'Amount': amount
+                        })
+    return parts
+
+def extract_from_estimate_pdf(doc):
+    """
+    Extracts parts from the ESTIMATE.pdf format.
+    Uses a two-step approach for robust description parsing.
+    """
+    parts = []
+    # Pattern to find lines that start with S.No., Part No.
+    # and capture the rest of the line.
+    line_pattern = re.compile(r"^\s*\d+\s+(?P<part_number>[A-Z0-9\-]+)\s+(?P<rest_of_line>.*)")
+
+    # Pattern to find the 'Approved Amount' (the last float before 'Replace'/'Repair Allow')
+    # and the preceding numbers (MRP, Depreciation %, Quantity Total, Claimed Value)
+    # This pattern is applied to 'rest_of_line'
+    amount_pattern = re.compile(
+        r"(?:[\d,]+\.\d{2,3}|\d+)\s+" +   # MRP
+        r"(?:[\d,]+\.\d{2,3}|\d+)\s+" +   # *Depreciation %
+        r"(?:[\d,]+\.\d{2,3}|\d+)\s+" +   # Quantity Total
+        r"(?:[\d,]+\.\d{2,3}|\d+)\s+" +   # Claimed Value
+        r"(?P<amount>[\d,]+\.\d{2,3}|\d+)\s+" + # Approved Amount (our target)
+        r"(?:Replace|Repair Allow)"       # Service Type
+    )
+
+    for page in doc:
+        text = page.get_text()
+        for line in text.split('\n'):
+            line_match = line_pattern.search(line)
+            if line_match:
+                part_number = line_match.group('part_number').strip()
+                rest_of_line = line_match.group('rest_of_line').strip()
+
+                amount_match = amount_pattern.search(rest_of_line)
+                if amount_match:
+                    amount = safe_float_convert(amount_match.group('amount'))
+                    # The description is everything between the part number and the first matched number sequence
+                    # Find the start of the first number sequence
+                    first_num_start = re.search(r"[\d,]+\.\d{2,3}|\d+", rest_of_line)
+                    if first_num_start:
+                        description = rest_of_line[:first_num_start.start()].strip()
+                        parts.append({
+                            'Part Number': part_number,
+                            'Description': description,
+                            'Amount': amount
+                        })
+    return parts
+
+def safe_extract_parts(pdf_file, doc_type):
+    """
+    Dispatches to the correct PDF extraction function based on document type.
+    Handles temporary file creation and cleanup.
+    """
     parts = []
     temp_path = None
     try:
@@ -60,47 +169,37 @@ def safe_extract_parts(pdf_file):
         
         doc = fitz.open(temp_path)
         
-        for page in doc:
-            text = page.get_text()
-            # Improved regex pattern for robustness
-            matches = re.finditer(
-                r'(?P<part_number>[A-Z0-9\-]+)\s+(?P<description>.+?)\s+(?P<amount>[\d,]+\.\d{2})',
-                text,
-                re.DOTALL
-            )
-            for match in matches:
-                part = {
-                    'Part Number': match.group('part_number').strip(),
-                    'Description': match.group('description').strip(),
-                    'Amount': safe_float_convert(match.group('amount'))
-                }
-                if part['Amount'] is not None:
-                    parts.append(part)
-        
+        if doc_type == 'estimate':
+            parts = extract_from_estimate_pdf(doc)
+        elif doc_type == 'bill':
+            parts = extract_from_bill_pdf(doc)
+        else:
+            st.error("Invalid document type specified for extraction.")
+            return pd.DataFrame()
+            
         doc.close()
         return pd.DataFrame(parts)
         
     except Exception as e:
-        st.error(f"PDF Processing Error: {str(e)}")
+        st.error(f"PDF Processing Error for {doc_type.capitalize()}: {str(e)}")
         return pd.DataFrame()
     finally:
         if temp_path:
             try:
                 import os
                 os.unlink(temp_path)
-            except:
+            except OSError:
+                # Handle case where file might already be deleted or inaccessible
                 pass
 
-def safe_float_convert(value):
-    """Convert string to float with error handling"""
-    try:
-        return float(str(value).replace(',', ''))
-    except:
-        return None
-
-# ===== Comparison Functions =====
+# =============================================================================
+# 5. Comparison Logic
+# =============================================================================
 def safe_comparison(estimate_df, bill_df):
-    """Perform comparison with comprehensive error checking"""
+    """
+    Performs a safe comparison between estimate and bill DataFrames.
+    Identifies increased, reduced, new, and removed parts.
+    """
     results = {
         'increased': pd.DataFrame(),
         'reduced': pd.DataFrame(),
@@ -109,76 +208,101 @@ def safe_comparison(estimate_df, bill_df):
     }
     
     try:
-        if estimate_df.empty or bill_df.empty:
+        if estimate_df.empty and bill_df.empty:
+            return results
+        if estimate_df.empty: # All bill items are 'new' if estimate is empty
+            results['new'] = bill_df.copy().rename(columns={'Amount': 'Amount_bill'})
+            return results
+        if bill_df.empty: # All estimate items are 'removed' if bill is empty
+            results['removed'] = estimate_df.copy().rename(columns={'Amount': 'Amount_estimate'})
             return results
             
-        # Standardize column names
-        estimate_df = estimate_df.rename(columns=str.strip)
-        bill_df = bill_df.rename(columns=str.strip)
+        # Standardize column names (strip whitespace)
+        estimate_df = estimate_df.rename(columns=lambda x: x.strip())
+        bill_df = bill_df.rename(columns=lambda x: x.strip())
         
         # Ensure required columns exist
         required_cols = ['Part Number', 'Description', 'Amount']
         for col in required_cols:
-            if col not in estimate_df.columns or col not in bill_df.columns:
-                st.error(f"Missing required column: {col}")
+            if col not in estimate_df.columns:
+                st.error(f"Estimate DataFrame missing required column: '{col}'")
+                return results
+            if col not in bill_df.columns:
+                st.error(f"Bill DataFrame missing required column: '{col}'")
                 return results
                 
-        # Set index and prepare for comparison
+        # Set 'Part Number' as index for merging
         estimate_df = estimate_df.set_index('Part Number')
         bill_df = bill_df.set_index('Part Number')
         
-        # Perform a safe merge
-        try:
-            merged_df = bill_df.merge(
-                estimate_df,
-                how='outer',
-                suffixes=('_bill', '_estimate'),
-                indicator=True
-            )
-        except Exception as e:
-            st.error(f"Merge Error: {str(e)}")
-            return results
-            
-        # Calculate comparisons more safely
+        # Rename 'Amount' columns to distinguish them after merge
+        bill_df = bill_df.rename(columns={'Amount': 'Amount_bill', 'Description': 'Description_bill'})
+        estimate_df = estimate_df.rename(columns={'Amount': 'Amount_estimate', 'Description': 'Description_estimate'})
+        
+        # Perform an outer merge to capture all items from both DataFrames
+        merged_df = bill_df.merge(
+            estimate_df,
+            how='outer',
+            left_index=True,
+            right_index=True,
+            suffixes=('_bill', '_estimate'), # This suffix is now redundant due to explicit renaming
+            indicator=True # Adds a column indicating merge source
+        )
+        
+        # Ensure 'Amount_bill' and 'Amount_estimate' columns exist after merge
+        # Fill NaN values with 0 for numerical comparisons
+        merged_df['Amount_bill'] = merged_df['Amount_bill'].fillna(0)
+        merged_df['Amount_estimate'] = merged_df['Amount_estimate'].fillna(0)
+
+        # Identify increased, reduced, new, and removed items
         increased_mask = (
-            (merged_df['Amount_bill'] > merged_df['Amount_estimate']) & 
+            (merged_df['Amount_bill'] > merged_df['Amount_estimate']) &
             (merged_df['_merge'] == 'both')
         )
-        
         reduced_mask = (
-            (merged_df['Amount_bill'] < merged_df['Amount_estimate']) & 
+            (merged_df['Amount_bill'] < merged_df['Amount_estimate']) &
             (merged_df['_merge'] == 'both')
         )
-        
-        new_mask = (merged_df['_merge'] == 'left_only')
-        removed_mask = (merged_df['_merge'] == 'right_only')
-        
-        # Create comparison results with proper columns
-        for key, mask in [
-            ('increased', increased_mask),
-            ('reduced', reduced_mask),
-            ('new', new_mask),
-            ('removed', removed_mask)
-        ]:
-            if sum(mask) > 0:
-                results[key] = merged_df[mask].copy()
-                # Rename columns for display
-                results[key].columns = [c.replace('_bill', '').replace('_estimate', ' (Estimate)') 
-                                      for c in results[key].columns]
-                results[key] = results[key][[c for c in results[key].columns if c != '_merge']]
-                
+        new_mask = (merged_df['_merge'] == 'left_only') # In bill, not in estimate
+        removed_mask = (merged_df['_merge'] == 'right_only') # In estimate, not in bill
+
+        # Populate results dictionary
+        if not merged_df[increased_mask].empty:
+            results['increased'] = merged_df[increased_mask].copy()
+            results['increased'] = results['increased'][['Description_bill', 'Amount_bill', 'Amount_estimate']]
+            results['increased'].columns = ['Description', 'Bill Amount', 'Estimate Amount']
+
+        if not merged_df[reduced_mask].empty:
+            results['reduced'] = merged_df[reduced_mask].copy()
+            results['reduced'] = results['reduced'][['Description_bill', 'Amount_bill', 'Amount_estimate']]
+            results['reduced'].columns = ['Description', 'Bill Amount', 'Estimate Amount']
+
+        if not merged_df[new_mask].empty:
+            results['new'] = merged_df[new_mask].copy()
+            results['new'] = results['new'][['Description_bill', 'Amount_bill']]
+            results['new'].columns = ['Description', 'Bill Amount']
+
+        if not merged_df[removed_mask].empty:
+            results['removed'] = merged_df[removed_mask].copy()
+            results['removed'] = results['removed'][['Description_estimate', 'Amount_estimate']]
+            results['removed'].columns = ['Description', 'Estimate Amount']
+
     except Exception as e:
-        st.error(f"Comparison Error: {str(e)}")
+        st.error(f"Comparison Logic Error: {str(e)}")
+        # Return empty dataframes on error to prevent further issues
+        return {k: pd.DataFrame() for k in results}
         
     return results
 
-# ===== Display Functions =====
+# =============================================================================
+# 6. Display and Export Functions
+# =============================================================================
 def format_dataframe(df):
-    """Apply consistent formatting to DataFrames"""
+    """Applies consistent formatting to DataFrames for display."""
     if df.empty:
         return df
         
-    # Format numeric columns
+    # Apply comma formatting to numeric columns
     for col in df.columns:
         if pd.api.types.is_numeric_dtype(df[col]):
             df[col] = df[col].apply(lambda x: f"{x:,.2f}" if pd.notnull(x) else "")
@@ -186,59 +310,80 @@ def format_dataframe(df):
     return df
 
 def create_excel_download(comparison_result):
-    """Generate Excel download with all comparison sheets"""
+    """Generates an Excel file with all comparison sheets for download."""
     output = BytesIO()
     try:
+        # Check if there's any data to write to Excel
+        has_data = False
+        for name, df in comparison_result.items():
+            if not df.empty:
+                has_data = True
+                break
+        
+        if not has_data:
+            # st.warning("No comparison data to export to Excel.") # Already handled by main()
+            return None
+
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             for name, df in comparison_result.items():
                 if not df.empty:
-                    df.to_excel(writer, sheet_name=name.capitalize(), index=True)
+                    # Reset index to include 'Part Number' as a column in Excel
+                    df_to_export = df.reset_index()
+                    df_to_export.to_excel(writer, sheet_name=name.capitalize(), index=False)
                     
         output.seek(0)
         b64 = base64.b64encode(output.read()).decode()
-        return f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="Estimate_vs_Bill.xlsx">📥 Download Full Report</a>'
+        return f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="Estimate_vs_Bill_Comparison_Report.xlsx">📥 Download Full Report (Excel)</a>'
     except Exception as e:
         st.error(f"Excel Generation Error: {str(e)}")
         return None
 
-# ===== Main Application =====
+# =============================================================================
+# 7. Main Application Logic
+# =============================================================================
 def main():
     st.markdown('<div class="header">Estimate vs Bill Comparison Tool</div>', unsafe_allow_html=True)
-    st.markdown("Compare your estimate and bill documents to identify changes in pricing and parts.")
+    st.markdown("Upload your Estimate and Bill PDFs to compare part numbers, descriptions, and amounts.")
     
     with st.expander("📁 Upload Documents", expanded=True):
         col1, col2 = st.columns(2)
         with col1:
-            estimate_file = st.file_uploader("Upload Estimate PDF", type=["pdf"])
+            estimate_file = st.file_uploader("Upload Estimate PDF", type=["pdf"], key="estimate_uploader")
         with col2:
-            bill_file = st.file_uploader("Upload Bill PDF", type=["pdf"])
+            bill_file = st.file_uploader("Upload Bill PDF", type=["pdf"], key="bill_uploader")
     
     if st.button("🔍 Compare Documents", use_container_width=True, type="primary"):
         if estimate_file is None or bill_file is None:
-            st.warning("Please upload both estimate and bill documents")
+            st.warning("Please upload both Estimate and Bill PDF documents to proceed.")
             return
             
-        with st.spinner("Processing documents..."):
-            # Processing estimate
-            estimate_df = safe_extract_parts(estimate_file)
+        with st.spinner("Processing documents and performing comparison..."):
+            # Extract data from Estimate PDF
+            estimate_df = safe_extract_parts(estimate_file, 'estimate')
             if estimate_df.empty:
-                st.error("Failed to extract data from Estimate PDF")
+                st.error("Failed to extract any valid part data from the Estimate PDF. Please ensure it matches the expected format.")
                 return
                 
-            # Processing bill
-            bill_df = safe_extract_parts(bill_file)
+            # Extract data from Bill PDF
+            bill_df = safe_extract_parts(bill_file, 'bill')
             if bill_df.empty:
-                st.error("Failed to extract data from Bill PDF")
+                st.error("Failed to extract any valid part data from the Bill PDF. Please ensure it matches the expected format.")
                 return
                 
-            # Run comparison
+            # Debug: Show extracted raw dataframes
+            with st.expander("⚙️ Debug: Raw Extracted Data (for troubleshooting)", expanded=False):
+                st.subheader("Extracted Estimate Data:")
+                st.dataframe(estimate_df, use_container_width=True)
+                st.subheader("Extracted Bill Data:")
+                st.dataframe(bill_df, use_container_width=True)
+                
+            # Perform the comparison
             comparison_result = safe_comparison(estimate_df, bill_df)
             
-            # Display results
             st.success("Comparison completed successfully!")
             st.markdown("---")
             
-            # Show summary metrics
+            # Display summary metrics
             metric_cols = st.columns(4)
             metrics = [
                 ("🔺 Increased", len(comparison_result['increased']), "#e63946"),
@@ -259,14 +404,17 @@ def main():
                         unsafe_allow_html=True
                     )
             
-            # Show detailed comparison tabs
+            # Display detailed comparison results in tabs
             st.markdown("---")
             with st.expander("📊 Detailed Comparison Results", expanded=True):
-                tabs = st.tabs([tab[0] for tab in metrics])
+                tabs_labels = [tab[0] for tab in metrics]
+                tabs_keys = ['increased', 'reduced', 'new', 'removed']
                 
-                for i, (tab, key) in enumerate(zip(tabs, ['increased', 'reduced', 'new', 'removed'])):
+                tabs = st.tabs(tabs_labels)
+                
+                for i, tab in enumerate(tabs):
                     with tab:
-                        df = comparison_result[key]
+                        df = comparison_result[tabs_keys[i]]
                         if not df.empty:
                             st.dataframe(
                                 format_dataframe(df),
@@ -274,13 +422,15 @@ def main():
                                 height=400
                             )
                         else:
-                            st.info(f"No {key.replace('_', ' ')} parts found")
+                            st.info(f"No {tabs_keys[i].replace('_', ' ')} parts found in this category.")
             
-            # Excel download
+            # Excel download link
             st.markdown("---")
             download_link = create_excel_download(comparison_result)
             if download_link:
                 st.markdown(download_link, unsafe_allow_html=True)
+            else:
+                st.info("No data available to generate an Excel report.")
 
 if __name__ == "__main__":
     main()
